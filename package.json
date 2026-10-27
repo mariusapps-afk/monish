@@ -1,6 +1,6 @@
 {
   "name": "monish",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Send your coding agent's results, failures, live progress and yes or no questions to your iPhone lock screen. One-command setup for Claude Code, Codex and Cursor.",
   "keywords": [
     "claude-code",

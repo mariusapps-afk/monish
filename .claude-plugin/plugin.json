@@ -1,7 +1,7 @@
 {
   "name": "monish",
   "displayName": "Monish",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Send your agent's results, failures, live progress and yes or no questions to your iPhone lock screen, and get a ping when Claude Code waits for your permission.",
   "author": {
     "name": "Marius Labs",
