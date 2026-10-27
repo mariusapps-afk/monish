@@ -1,0 +1,17 @@
+{
+  "name": "monish",
+  "description": "Monish: your coding agents on your iPhone lock screen.",
+  "owner": {
+    "name": "Marius Labs",
+    "url": "https://monish.cc"
+  },
+  "plugins": [
+    {
+      "name": "monish",
+      "source": "./",
+      "description": "Send your agent's results, failures, live progress and yes or no questions to your iPhone lock screen, and get a ping when Claude Code waits for your permission.",
+      "category": "notifications",
+      "tags": ["notifications", "iphone", "lock-screen", "approvals"]
+    }
+  ]
+}

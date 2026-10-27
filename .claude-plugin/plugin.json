@@ -1,0 +1,20 @@
+{
+  "name": "monish",
+  "displayName": "Monish",
+  "version": "1.0.0",
+  "description": "Send your agent's results, failures, live progress and yes or no questions to your iPhone lock screen, and get a ping when Claude Code waits for your permission.",
+  "author": {
+    "name": "Marius Labs",
+    "email": "support@monish.cc",
+    "url": "https://monish.cc"
+  },
+  "homepage": "https://monish.cc",
+  "repository": "https://github.com/mariusapps-afk/monish",
+  "license": "MIT",
+  "keywords": ["notifications", "iphone", "ios", "push", "lock-screen", "live-activities", "approvals", "permission-prompt"],
+  "icon": "./assets/icon.svg",
+  "documentationUrl": "https://monish.cc/skill",
+  "supportUrl": "https://monish.cc/support",
+  "privacyPolicyUrl": "https://monish.cc/privacy",
+  "termsOfServiceUrl": "https://monish.cc/terms"
+}
