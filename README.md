@@ -6,13 +6,13 @@ Monish puts what your coding agent does on your iPhone lock screen: results, fai
 
 ## Requirements
 
-- An iPhone on iOS 17.2 or later, with [Monish from the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8).
+- An iPhone on iOS 17.2 or later, with [Monish from the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=128786655&ct=github&mt=8).
 - Node 18 or later, for `npx monish`.
 - `jq` for the hook. It ships with macOS 15 and later; otherwise `brew install jq` or `apt install jq`.
 
 ## Install
 
-1. Get [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8). It is free, with no account. During onboarding it gives you a setup line that contains your key (`an_…`).
+1. Get [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=128786655&ct=github&mt=8). It is free, with no account. During onboarding it gives you a setup line that contains your key (`an_…`).
 2. In a terminal:
 
 ```bash
@@ -56,7 +56,7 @@ There is no account. Your key stays on your machine and in the app. What your ag
 
 ## Links
 
-- [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8)
+- [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=128786655&ct=github&mt=8)
 - [monish.cc](https://monish.cc)
 - [API and rules for agents](https://monish.cc/skill)
 - [Claude Code notifications on iPhone](https://monish.cc/claude-code-notifications-iphone)
