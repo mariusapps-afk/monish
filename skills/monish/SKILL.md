@@ -23,13 +23,13 @@ mkdir -p ~/.config/monish && printf '%s' 'an_7Q2k9fXbRm' > ~/.config/monish/key 
 ```
 
 3. From now on, resolve the key in this order: `$MONISH_KEY` environment variable, then `~/.config/monish/key`. Never print the key back to the user and never write it into a repository.
-3b. Install this file as a local skill so future sessions know when to reach the phone without being told (Claude Code reads the `description` above to decide when to load it):
+3b. If the Monish plugin for Claude Code is installed (`/plugin install monish@monish`), skip 3b and 6: the skill and the hook are already there. Otherwise, install this file as a local skill so future sessions know when to reach the phone without being told (Claude Code reads the `description` above to decide when to load it):
 
 ```bash
 mkdir -p ~/.claude/skills/monish && curl -s https://monish.cc/skill -o ~/.claude/skills/monish/SKILL.md
 ```
 
-Codex and Cursor have no skills folder: see section 4 for the one line to add to the project rules instead.
+Codex reads skills from `~/.agents/skills`: put the same file at `~/.agents/skills/monish/SKILL.md`. Cursor has no skills: add the rule from section 4 to `.cursor/rules` instead.
 4. Send the connection ping. The app is waiting for it to finish onboarding:
 
 ```bash
@@ -44,7 +44,7 @@ Keep the `setup-` id: it tells the app this is the connection ping. The app mark
 
 5. Tell the user in one line that the ping is sent and that they can continue in the app. If the request returned `401 unknown_key`, the app has not registered yet: ask the user to finish the notifications step in the app, then retry once.
 
-6. Install the hook (section 4) so the phone rings when you are stuck on a permission prompt.
+6. Without the plugin, install the hook (section 4) so the phone rings when you are stuck on a permission prompt.
 
 ## 2. The one endpoint
 
@@ -121,16 +121,16 @@ Rules that keep it useful:
 
 ## 4. One hook, for the one moment you cannot speak
 
-The skill (section 3) is how you decide *what* and *when* to send: a finished task, a failure, a figure, a question. Do not add a hook for those; a hook cannot write a useful title and only duplicates what you send yourself. The single exception is when Claude Code stops and waits for the user's permission: you cannot send anything from inside that pause, so a hook does it for you.
+The skill (section 3) is how you decide *what* and *when* to send: a finished task, a failure, a figure, a question. Do not add a hook for those; a hook cannot write a useful title and only duplicates what you send yourself. The single exception is when Claude Code or Codex stops and waits for the user's permission: you cannot send anything from inside that pause, so a hook does it for you.
 
 ### Claude Code
 
-Add to `~/.claude/settings.json` (merge with existing `hooks`). `Notification` fires for several events; only `permission_prompt` and `elicitation_dialog` mean Claude is stuck, so the script below drops the others (`auth_success`, `idle_prompt`: one user received 58 « Needs you » for sign-ins alone). It is sent as a warning with sound, because the task is stuck until the user comes back; the phone's quiet hours still apply at night.
+Add to `~/.claude/settings.json` (merge with existing `hooks`). `Notification` fires for several events; only `permission_prompt` and `elicitation_dialog` mean Claude is stuck, so the matcher and the script keep only those (`auth_success`, `idle_prompt`: one user received 58 « Needs you » for sign-ins alone). It is sent as a warning with sound, because the task is stuck until the user comes back; the phone's quiet hours still apply at night. Its `id` is `needs-<project>`: one line per project, updated in place, and an identical repeat arrives silently.
 
 ```json
 {
   "hooks": {
-    "Notification": [{"hooks":[{"type":"command","command":"~/.config/monish/hook.sh"}]}]
+    "Notification": [{"matcher":"permission_prompt|elicitation_dialog","hooks":[{"type":"command","command":"~/.config/monish/hook.sh","timeout":10}]}]
   }
 }
 ```
@@ -144,10 +144,10 @@ key="${MONISH_KEY:-$(cat ~/.config/monish/key 2>/dev/null)}"; [ -z "$key" ] && e
 input=$(cat)
 kind=$(printf '%s' "$input" | jq -r '.notification_type // ""' 2>/dev/null)
 case "$kind" in permission_prompt|elicitation_dialog) ;; *) exit 0 ;; esac
-project=$(basename "$PWD")
-body=$(printf '%s' "$input" | jq -r '.message // ""' 2>/dev/null | head -c 200)
-jq -nc --arg k "$key" --arg t "Needs you · $project" --arg b "$body" --arg a "Claude Code · $project" \
-  '{key:$k,type:"done",title:$t,body:$b,agent:$a,fields:{severity:"warning"}}' \
+dir=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null); project=$(basename "${dir:-$PWD}")
+body=$(printf '%s' "$input" | jq -r '(.message // "")[0:200]' 2>/dev/null)
+MONISH_K="$key" jq -nc --arg p "$project" --arg b "$body" \
+  '{key:env.MONISH_K,id:("needs-"+($p|gsub("[^A-Za-z0-9_.:-]";"-")))[0:64],type:"done",title:("Needs you · "+$p),body:$b,agent:("Claude Code · "+$p),fields:{severity:"warning"}}' \
   | curl -s -m 5 https://monish.cc/v1/send -H 'content-type: application/json' -d @- >/dev/null
 exit 0
 ```
@@ -156,7 +156,7 @@ The hook must always exit 0 and never block: a 5 second timeout, no retries. Do 
 
 ### Codex and Cursor
 
-They have no equivalent hook. Instead, add this to the project's `AGENTS.md` (Codex) or `.cursor/rules` (Cursor):
+Add this to the project's `AGENTS.md` (Codex) or `.cursor/rules` (Cursor):
 
 ```
 When a task longer than a minute finishes, fails, or needs my decision, call the Monish endpoint as described in https://monish.cc/skill with the key in ~/.config/monish/key. One item per task, same id for progress then done.
@@ -164,7 +164,32 @@ When a task longer than a minute finishes, fails, or needs my decision, call the
 
 Then call `notify` yourself at those moments.
 
-If you wire Codex's `notify` setting to Monish, send its approval events with a fixed `id` per project (`codex-<project>`) and `type: done`, `fields: {"severity":"warning"}`: repeated approvals update one line instead of stacking, and identical repeats arrive silently. Do not relay every assistant turn: the real result belongs to the `done` you send yourself.
+Codex also has the hook (Cursor does not): `PermissionRequest` fires when Codex is about to ask for an approval. Add to `~/.codex/hooks.json` (root key `hooks`, merge with existing ones; `timeout` is in seconds):
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [{"hooks":[{"type":"command","command":"~/.config/monish/codex-hook.sh","timeout":10}]}]
+  }
+}
+```
+
+Write `~/.config/monish/codex-hook.sh` (make it executable). It prints nothing, so Codex still asks as usual, and it shares the `needs-<project>` line:
+
+```bash
+#!/bin/sh
+# Monish: ping the phone when Codex waits for an approval. Reads the hook JSON on stdin.
+key="${MONISH_KEY:-$(cat ~/.config/monish/key 2>/dev/null)}"; [ -z "$key" ] && exit 0
+input=$(cat)
+dir=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null); project=$(basename "${dir:-$PWD}")
+tool=$(printf '%s' "$input" | jq -r '.tool_name // "a command"' 2>/dev/null)
+MONISH_K="$key" jq -nc --arg p "$project" --arg t "$tool" \
+  '{key:env.MONISH_K,id:("needs-"+($p|gsub("[^A-Za-z0-9_.:-]";"-")))[0:64],type:"done",title:("Needs you · "+$p),body:("Codex is waiting for your approval: "+$t),agent:("Codex · "+$p),fields:{severity:"warning"}}' \
+  | curl -s -m 5 https://monish.cc/v1/send -H 'content-type: application/json' -d @- >/dev/null
+exit 0
+```
+
+Codex runs a new or changed hook only once the user trusts it: ask them to run `/hooks` in Codex and trust this one. Do not wire Codex's `notify` setting to Monish: it only receives `agent-turn-complete`, never approvals, and a ping per turn is noise; `tui.notifications` already shows `approval-requested` in the terminal.
 
 ### Cron, CI, shell scripts
 
