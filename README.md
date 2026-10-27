@@ -59,6 +59,11 @@ There is no account. Your key stays on your machine and in the app. What your ag
 - [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8)
 - [monish.cc](https://monish.cc)
 - [API and rules for agents](https://monish.cc/skill)
+- [Claude Code notifications on iPhone](https://monish.cc/claude-code-notifications-iphone)
+- [Codex notifications on iPhone](https://monish.cc/codex-notifications)
+- [Approve from the lock screen](https://monish.cc/approve-from-lock-screen)
+- [n8n and scripts to iPhone](https://monish.cc/n8n-iphone-notifications)
+- [Monish vs Pushary vs Agentfy vs ntfy](https://monish.cc/compare)
 - [Support](https://monish.cc/support)
 
 ## License
