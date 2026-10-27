@@ -2,7 +2,7 @@
 
 Monish puts what your coding agent does on your iPhone lock screen: results, failures, live progress, and yes or no questions you answer with Approve or Deny without unlocking.
 
-![Monish on the iPhone lock screen](assets/lockscreen.png)
+![A question from the agent on the iPhone lock screen with Approve and Deny](assets/lockscreen.png)
 
 ## Install
 
