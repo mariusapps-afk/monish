@@ -137,7 +137,7 @@ async function resolveKey(flags) {
       if (reuse !== false) raw = file;
     }
   }
-  if (!raw && INTERACTIVE) raw = await ask('  Paste the key shown in the Monish app (an_…): ');
+  if (!raw && INTERACTIVE) raw = await ask('  Paste the setup line or the key from the Monish app (an_…): ');
   if (!raw) {
     fail('No key. Run `npx monish setup --key an_XXXXXXXXXX` with the key shown in the Monish app.');
   }

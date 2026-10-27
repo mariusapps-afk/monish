@@ -6,7 +6,7 @@ Monish puts what your coding agent does on your iPhone lock screen: results, fai
 
 ## Install
 
-1. Get [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8). It is free, with no account, and shows your key (`an_…`) during onboarding.
+1. Get [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8). It is free, with no account. During onboarding it gives you a setup line that contains your key (`an_…`).
 2. In a terminal:
 
 ```bash
@@ -15,7 +15,7 @@ claude plugin install monish@monish
 npx monish setup
 ```
 
-`npx monish setup` asks for your key, saves it, offers to add the Monish rule for Codex and Cursor, and sends the "Connected" ping that finishes onboarding in the app. On Codex, Cursor, or Claude Code without plugins, `npx monish setup` alone is enough: it also installs the skill and the hook.
+`npx monish setup` asks for that line or the key alone, saves the key, offers to add the Monish rule for Codex and Cursor, and sends the "Connected" ping that finishes onboarding in the app. On Codex, Cursor, or Claude Code without plugins, `npx monish setup` alone is enough: it also installs the skill and the hook.
 
 ## What you get
 
