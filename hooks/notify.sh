@@ -19,9 +19,10 @@ project=$(basename "$dir")
 slug=$(printf '%s' "$project" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-58)
 body=$(printf '%s' "$input" | jq -r '(.message // "") | .[0:200]' 2>/dev/null)
 
-payload=$(jq -nc --arg k "$key" --arg id "needs-$slug" --arg t "Needs you · $project" \
+# The key goes through the environment, not the command line, so it never shows in ps.
+payload=$(MONISH_K="$key" jq -nc --arg id "needs-$slug" --arg t "Needs you · $project" \
   --arg b "$body" --arg a "Claude Code · $project" \
-  '{key:$k,id:$id,type:"done",title:$t,body:$b,agent:$a,fields:{severity:"warning"}}') || exit 0
+  '{key:env.MONISH_K,id:$id,type:"done",title:$t,body:$b,agent:$a,fields:{severity:"warning"}}') || exit 0
 
 if [ -n "$MONISH_DRY_RUN" ]; then
   printf '%s\n' "$payload" | jq -c '.key = "an_***"'
