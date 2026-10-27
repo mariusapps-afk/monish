@@ -1,0 +1,42 @@
+{
+  "name": "monish",
+  "version": "1.0.0",
+  "description": "Send your coding agent's results, failures, live progress and yes or no questions to your iPhone lock screen. One-command setup for Claude Code, Codex and Cursor.",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "cursor",
+    "ai-agents",
+    "notifications",
+    "iphone",
+    "ios",
+    "push",
+    "lock-screen",
+    "live-activities"
+  ],
+  "homepage": "https://monish.cc",
+  "bugs": {
+    "url": "https://github.com/mariusapps-afk/monish/issues",
+    "email": "support@monish.cc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mariusapps-afk/monish.git"
+  },
+  "license": "MIT",
+  "author": "Marius Labs <support@monish.cc> (https://monish.cc)",
+  "bin": {
+    "monish": "cli/monish.js"
+  },
+  "files": [
+    "cli/",
+    "hooks/notify.sh",
+    "skills/monish/SKILL.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "sync-skill": "curl -fsS https://monish.cc/skill -o skills/monish/SKILL.md"
+  }
+}
