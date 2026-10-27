@@ -4,6 +4,12 @@ Monish puts what your coding agent does on your iPhone lock screen: results, fai
 
 ![A question from the agent on the iPhone lock screen with Approve and Deny](assets/lockscreen.png)
 
+## Requirements
+
+- An iPhone on iOS 17.2 or later, with [Monish from the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8).
+- Node 18 or later, for `npx monish`.
+- `jq` for the hook. It ships with macOS 15 and later; otherwise `brew install jq` or `apt install jq`.
+
 ## Install
 
 1. Get [Monish on the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=PT_PLACEHOLDER&ct=github&mt=8). It is free, with no account. During onboarding it gives you a setup line that contains your key (`an_…`).
@@ -31,7 +37,18 @@ npx monish ping "Backup finished" --body "214 files, 3.2 GB"
 
 - **Hook** (`hooks/notify.sh`): runs on Claude Code `Notification` events, keeps only `permission_prompt` and `elicitation_dialog`, and posts the notification text, the project folder name and your key to `https://monish.cc/v1/send`. It needs `jq` and `curl`, times out after 5 seconds, always exits 0, and does nothing when no key is saved.
 - **Skill** (`skills/monish/SKILL.md`): instructions that tell Claude when and how to call the same endpoint with `curl`.
-- **CLI** (`npx monish setup`): writes your key to `~/.config/monish/key` (readable by you only), downloads the skill from `https://monish.cc/skill` to `~/.claude/skills/monish/SKILL.md`, writes `~/.config/monish/hook.sh` and adds one `Notification` hook to `~/.claude/settings.json` (existing hooks are kept, the previous file is saved as `settings.json.monish-backup`), adds one rule to `~/.codex/AGENTS.md` or `.cursor/rules/monish.mdc` only if you say yes, then sends one ping. When the plugin is enabled, the CLI skips the skill and the hook. No dependencies, no telemetry.
+- **CLI** (`npx monish setup`): writes your key to `~/.config/monish/key` (readable by you only), downloads the skill from `https://monish.cc/skill` to `~/.claude/skills/monish/SKILL.md`, writes `~/.config/monish/hook.sh` and adds one `Notification` hook to `~/.claude/settings.json` or the file it links to (existing hooks are kept, the previous file is saved as `settings.json.monish-backup`), adds one rule to `~/.codex/AGENTS.md` or `.cursor/rules/monish.mdc` only if you say yes, then sends one ping. When the plugin is enabled, the CLI skips the skill and the hook. No dependencies, no telemetry.
+
+## Uninstall
+
+1. Remove the plugin: `claude plugin uninstall monish@monish`, then `claude plugin marketplace remove monish`.
+2. Remove what `npx monish setup` wrote, the key and the hook script included:
+
+```bash
+rm -rf ~/.config/monish ~/.claude/skills/monish ~/.claude/settings.json.monish-backup
+```
+
+3. In `~/.claude/settings.json`, delete the `Notification` entry whose command is `~/.config/monish/hook.sh`. If you added the Monish rule, delete it from `~/.codex/AGENTS.md` or `.cursor/rules/monish.mdc`.
 
 ## Privacy
 
