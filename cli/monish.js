@@ -196,6 +196,16 @@ async function installSkill() {
   step(`Skill installed in ${tilde(P.skillFile)} (from ${from})`);
 }
 
+// ~/.claude/settings.json is often a link into a dotfiles repository: write the file it points to,
+// so the link stays a link.
+function settingsTarget() {
+  try {
+    return fs.lstatSync(P.settings).isSymbolicLink() ? fs.realpathSync(P.settings) : P.settings;
+  } catch {
+    return P.settings; // missing file, or a link to nothing
+  }
+}
+
 function hookSnippet() {
   return JSON.stringify(
     { hooks: { Notification: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 10 }] }] } },
@@ -237,15 +247,17 @@ function installHook() {
   settings.hooks = hooks;
 
   fs.mkdirSync(P.claudeDir, { recursive: true });
+  const target = settingsTarget();
   let mode = 0o644;
   if (raw !== null) {
-    mode = fs.statSync(P.settings).mode & 0o777;
+    mode = fs.statSync(target).mode & 0o777;
     fs.writeFileSync(`${P.settings}.monish-backup`, raw, { mode });
   }
-  writeAtomic(P.settings, `${JSON.stringify(settings, null, 2)}\n`, mode);
+  writeAtomic(target, `${JSON.stringify(settings, null, 2)}\n`, mode);
   step(
-    `Hook added to ${tilde(P.settings)}: your phone rings when Claude Code waits for your permission` +
-      (raw !== null ? ` (previous file kept as settings.json.monish-backup)` : ''),
+    `Hook added to ${tilde(P.settings)}${target !== P.settings ? ` (link to ${tilde(target)})` : ''}: ` +
+      'your phone rings when Claude Code waits for your permission' +
+      (raw !== null ? ' (previous file kept as settings.json.monish-backup)' : ''),
   );
   if (!onPath('jq')) step('The hook needs jq: it ships with macOS 15 and later, otherwise `brew install jq` or `apt install jq`.');
 }
