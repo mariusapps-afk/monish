@@ -7,8 +7,8 @@ Monish puts what your coding agent does on your iPhone lock screen: results, fai
 ## Requirements
 
 - An iPhone on iOS 17.2 or later, with [Monish from the App Store](https://apps.apple.com/app/apple-store/id6822071271?pt=128786655&ct=github&mt=8).
-- Node 18 or later, for `npx monish`.
-- `jq` for the hook. It ships with macOS 15 and later; otherwise `brew install jq` or `apt install jq`.
+- For Claude Code: nothing else, the installer below brings the `monish` command (macOS, Linux, Windows). Node 18 or later only if you prefer `npx monish`.
+- For `npx monish setup` (other agents): Node 18 or later, and `jq` for the hook. It ships with macOS 15 and later; otherwise `brew install jq` or `apt install jq`.
 
 ## Install
 
@@ -23,19 +23,39 @@ npx monish setup
 
 `npx monish setup` asks for that line or the key alone, saves the key, offers to add the Monish rule for Codex and Cursor, and sends the "Connected" ping that finishes onboarding in the app. On Codex, Cursor, or Claude Code without plugins, `npx monish setup` alone is enough: it also installs the skill and the hook.
 
+## Claude Code: install and pair
+
+Open Monish on your iPhone: it shows a 6-digit code. Then, in a terminal on the computer:
+
+```bash
+curl -fsSL https://monish.cc/install.sh | sh -s 482913                # macOS and Linux
+```
+
+```powershell
+irm https://monish.cc/install.ps1 | iex; monish pair 482913            # Windows PowerShell
+```
+
+```bash
+npx monish pair 482913                                                 # anywhere, with Node 18 or later
+```
+
+The installer needs no Node and no sudo. It downloads the `monish` program for your system from the [latest release](https://github.com/mariusapps-afk/monish/releases/latest), checks its SHA-256, puts it in `~/.local/bin/monish` (`%USERPROFILE%\.local\bin\monish.exe` on Windows), adds that folder to your `PATH` if needed (one line in `~/.zshrc`, `~/.bashrc`, `~/.bash_profile` or fish's `config.fish`; the user `Path` on Windows), then runs `monish pair` with the code. Run it again to update. Options, as environment variables: `MONISH_INSTALL_DIR` (another folder), `MONISH_VERSION` (a given release, e.g. `1.2.0`), `MONISH_NO_MODIFY_PATH=1`. Extra arguments go to `pair`: `sh -s 482913 --name "MacBook Pro"`.
+
 ## Claude Code commands
 
 ```bash
-npx monish pair 482913        # the 6-digit code shown in the Monish app; --name "MacBook Pro" to rename this computer
-npx monish status             # pairing, iPhone app version, hooks, Node path, Claude Code version
-npx monish test               # sends a test permission request to your iPhone; nothing is run
-npx monish uninstall          # removes the hooks and unpairs this computer
-npx monish uninstall --all    # also removes the key, the skill and the Codex and Cursor rules
+monish pair 482913        # the 6-digit code shown in the Monish app; --name "MacBook Pro" to rename this computer
+monish status             # pairing, iPhone app version, hooks, Claude Code version
+monish test               # sends a test permission request to your iPhone; nothing is run
+monish uninstall          # removes the hooks and unpairs this computer
+monish uninstall --all    # also removes the key, the skill and the Codex and Cursor rules
 ```
 
-`pair` copies the tool to `~/.config/monish/monish.js`, saves this computer's token in `~/.config/monish/computer.json` (readable by you only) and adds six hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`, or the file it links to): `PermissionRequest`, `Elicitation`, `Stop`, `StopFailure`, `PostToolUse` and `UserPromptSubmit`. Your other hooks are kept and the previous file is saved as `settings.json.monish-backup`; `uninstall` removes exactly what `pair` added.
+With Node, the same commands work as `npx monish …`.
 
-From then on, Claude Code's permission prompts, plans, questions, MCP forms and the end of each turn reach your iPhone, and the first answer wins: on the iPhone or in the terminal. While you type in Claude's terminal, your iPhone only gets a silent note, and a request the terminal answered is closed on the iPhone. If you reply to the end of a turn, Claude takes the reply as its next instruction. The hooks send what the request shows (the command and its description, the file path, the plan, the questions, the form or the end-of-turn message), the project folder name, a short hash of the session id and this computer's name to `https://monish.cc`. Needs Node 18 or later; macOS and Linux, Windows in beta.
+`pair` points the hooks at the installed `monish` program (with `npx`, it copies the tool to `~/.config/monish/monish.js` and the hooks run it with Node), saves this computer's token in `~/.config/monish/computer.json` (readable by you only) and adds six hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`, or the file it links to): `PermissionRequest`, `Elicitation`, `Stop`, `StopFailure`, `PostToolUse` and `UserPromptSubmit`. Your other hooks are kept and the previous file is saved as `settings.json.monish-backup`; `uninstall` removes exactly what `pair` added.
+
+From then on, Claude Code's permission prompts, plans, questions, MCP forms and the end of each turn reach your iPhone, and the first answer wins: on the iPhone or in the terminal. While you type in Claude's terminal, your iPhone only gets a silent note, and a request the terminal answered is closed on the iPhone. If you reply to the end of a turn, Claude takes the reply as its next instruction. The hooks send what the request shows (the command and its description, the file path, the plan, the questions, the form or the end-of-turn message), the project folder name, a short hash of the session id and this computer's name to `https://monish.cc`. macOS and Linux, Windows in beta. To remove the program itself after `monish uninstall`: delete `~/.local/bin/monish` and the line marked `# added by monish` in your shell startup file.
 
 ## What you get
 
@@ -79,6 +99,10 @@ There is no account. Your key stays on your machine and in the app. What your ag
 - [n8n and scripts to iPhone](https://monish.cc/n8n-iphone-notifications)
 - [Monish vs Pushary vs Agentfy vs ntfy](https://monish.cc/compare)
 - [Support](https://monish.cc/support)
+
+## Release of the standalone program (maintainers)
+
+`sh install/build.sh` builds `dist/monish-<os>-<arch>.gz` (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64) and `dist/SHA256SUMS` with [Bun](https://bun.sh), signing the macOS builds ad hoc. `sh install/release.sh` builds them again from a clean, pushed commit and publishes them as the GitHub release `v<version of package.json>`, which `install.sh` and `install.ps1` download. `MONISH_DOWNLOAD_URL` points both installers at another folder (a local server, for tests) and `MONISH_API` makes `install.sh` pair against another server. `monish.cc/install.sh` and `monish.cc/install.ps1` serve `install/install.sh` and `install/install.ps1`.
 
 ## License
 
