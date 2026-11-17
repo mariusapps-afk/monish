@@ -23,6 +23,20 @@ npx monish setup
 
 `npx monish setup` asks for that line or the key alone, saves the key, offers to add the Monish rule for Codex and Cursor, and sends the "Connected" ping that finishes onboarding in the app. On Codex, Cursor, or Claude Code without plugins, `npx monish setup` alone is enough: it also installs the skill and the hook.
 
+## Claude Code commands
+
+```bash
+npx monish pair 482913        # the 6-digit code shown in the Monish app; --name "MacBook Pro" to rename this computer
+npx monish status             # pairing, iPhone app version, hooks, Node path, Claude Code version
+npx monish test               # sends a test permission request to your iPhone; nothing is run
+npx monish uninstall          # removes the hooks and unpairs this computer
+npx monish uninstall --all    # also removes the key, the skill and the Codex and Cursor rules
+```
+
+`pair` copies the tool to `~/.config/monish/monish.js`, saves this computer's token in `~/.config/monish/computer.json` (readable by you only) and adds six hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`, or the file it links to): `PermissionRequest`, `Elicitation`, `Stop`, `StopFailure`, `PostToolUse` and `UserPromptSubmit`. Your other hooks are kept and the previous file is saved as `settings.json.monish-backup`; `uninstall` removes exactly what `pair` added.
+
+From then on, Claude Code's permission prompts, plans, questions, MCP forms and the end of each turn reach your iPhone, and the first answer wins: on the iPhone or in the terminal. While you type in Claude's terminal, your iPhone only gets a silent note, and a request the terminal answered is closed on the iPhone. If you reply to the end of a turn, Claude takes the reply as its next instruction. The hooks send what the request shows (the command and its description, the file path, the plan, the questions, the form or the end-of-turn message), the project folder name, a short hash of the session id and this computer's name to `https://monish.cc`. Needs Node 18 or later; macOS and Linux, Windows in beta.
+
 ## What you get
 
 - **A ping when Claude Code is stuck.** When Claude Code stops for your permission or for an MCP form, your phone rings with the project name and what it is waiting for. One line per project, updated in place, so a task blocked for an hour does not ring twenty times.
