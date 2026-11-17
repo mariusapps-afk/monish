@@ -45,7 +45,7 @@ The installer needs no Node and no sudo. It downloads the `monish` program for y
 
 ```bash
 monish pair 482913        # the 6-digit code shown in the Monish app; --name "MacBook Pro" to rename this computer
-monish status             # pairing, iPhone app version, hooks, Claude Code version
+monish status             # pairing, iPhone app version, answer window, always-allowed rules, hooks, Claude Code version
 monish test               # sends a test permission request to your iPhone; nothing is run
 monish uninstall          # removes the hooks and unpairs this computer
 monish uninstall --all    # also removes the key, the skill and the Codex and Cursor rules
@@ -53,9 +53,11 @@ monish uninstall --all    # also removes the key, the skill and the Codex and Cu
 
 With Node, the same commands work as `npx monish …`.
 
-`pair` points the hooks at the installed `monish` program (with `npx`, it copies the tool to `~/.config/monish/monish.js` and the hooks run it with Node), saves this computer's token in `~/.config/monish/computer.json` (readable by you only) and adds six hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`, or the file it links to): `PermissionRequest`, `Elicitation`, `Stop`, `StopFailure`, `PostToolUse` and `UserPromptSubmit`. Your other hooks are kept and the previous file is saved as `settings.json.monish-backup`; `uninstall` removes exactly what `pair` added.
+`pair` points the hooks at the installed `monish` program (with `npx`, it copies the tool to `~/.config/monish/monish.js` and the hooks run it with Node), saves this computer's token in `~/.config/monish/computer.json` (readable by you only) and adds eight hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`, or the file it links to): `PermissionRequest`, `Elicitation`, `Stop`, `StopFailure`, `PostToolUse`, `UserPromptSubmit`, `PreToolUse` and `SessionEnd`. Your other hooks are kept and the previous file is saved as `settings.json.monish-backup`; `uninstall` removes exactly what `pair` added.
 
-From then on, Claude Code's permission prompts, plans, questions, MCP forms and the end of each turn reach your iPhone, and the first answer wins: on the iPhone or in the terminal. While you type in Claude's terminal, your iPhone only gets a silent note, and a request the terminal answered is closed on the iPhone. If you reply to the end of a turn, Claude takes the reply as its next instruction. The hooks send what the request shows (the command and its description, the file path, the plan, the questions, the form or the end-of-turn message), the project folder name, a short hash of the session id and this computer's name to `https://monish.cc`. macOS and Linux, Windows in beta. To remove the program itself after `monish uninstall`: delete `~/.local/bin/monish` and the line marked `# added by monish` in your shell startup file.
+From then on, Claude Code's permission prompts, plans, questions, MCP forms and the end of each turn reach your iPhone, and the first answer wins: on the iPhone or in the terminal. While you type in Claude's terminal, your iPhone only gets a silent note, and a request the terminal answered is closed on the iPhone. If you reply to the end of a turn, Claude takes the reply as its next instruction. How long a request waits for the iPhone is the answer window you set in Monish (10 minutes by default).
+
+A permission with a clear target can be answered with **Allow for this session** or **Always allow this command** (or this site, this tool, edits in this project). The rule is kept by Monish, not in your Claude Code settings: it covers that exact command (site, tool) in that project folder on this computer, the next time Claude Code asks it is allowed without reaching your iPhone, and removing it in Monish (Setup, Computers) takes effect at the next request. Session rules end with the session. Each interactive session also gets one card on the lock screen that follows it (working, needs you, question, plan, done); `claude -p` runs get none. The hooks send what the request shows (the command and its description, the file path, the plan, the questions, the form or the end-of-turn message), the project folder name, a short hash of the project path and of the session id, and this computer's name to `https://monish.cc`; for the session card, the name of the tool being run with the file name, the site or the first line of the command, at most every 15 seconds, and the start of the end-of-turn message. macOS and Linux, Windows in beta. To remove the program itself after `monish uninstall`: delete `~/.local/bin/monish` and the line marked `# added by monish` in your shell startup file.
 
 ## What you get
 
@@ -86,7 +88,7 @@ rm -rf ~/.config/monish ~/.claude/skills/monish ~/.claude/settings.json.monish-b
 
 ## Privacy
 
-There is no account. Your key stays on your machine and in the app. What your agents send is kept 48 hours on our server, then deleted; answers are kept 24 hours. Details in the [privacy policy](https://monish.cc/privacy).
+There is no account. Your key stays on your machine and in the app. What your agents send is kept 48 hours on our server, then deleted; answers are kept 24 hours. The only exception is what you choose to always allow (a command, a site, a tool name): it is kept until you remove it in the app, unpair the computer or delete your key. Details in the [privacy policy](https://monish.cc/privacy).
 
 ## Links
 
