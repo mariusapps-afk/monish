@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Monish CLI: pairs this computer with the Monish iPhone app and installs the Claude Code hooks
-// (permissions, questions, forms and turn ends answered from the iPhone), one-command setup for
-// Codex and Cursor, and a ping from the shell. No dependencies, Node 18 or later.
+// (permissions, questions, plans, forms and turn ends answered from the iPhone, always / session rules
+// kept by the Worker, a lock screen card per session), one-command setup for Codex and Cursor, and a
+// ping from the shell. No dependencies, Node 18 or later.
 // Contract: https://monish.cc/skill
 'use strict';
 
@@ -32,6 +33,7 @@ const TESTED_CLAUDE = '2.1.325'; // Claude Code version the hooks were proven wi
 const IDLE_S = 30; // no keystroke for this long in Claude's terminal = away from the keyboard
 const GRACE_S = 10; // wait before asking the iPhone when another permission hook may decide first
 const MAX_WAIT_S = 3600;
+const TOOL_EVENT_S = 15; // at most one `tool` session event per session in this many seconds
 const HOOK_TIMEOUT_S = 3660;
 const OUR_SCRIPT = '.config/monish/monish.js';
 
@@ -227,6 +229,8 @@ function extractKey(raw) {
   return m ? m[0] : String(raw).trim();
 }
 
+const isComputerToken = (text) => /^mc_[1-9A-HJ-NP-Za-km-z]+$/.test(String(text ?? '').trim());
+
 function savedKey() {
   const env = process.env.MONISH_KEY && extractKey(process.env.MONISH_KEY);
   if (env) return env;
@@ -416,6 +420,8 @@ const HOOKS = [
   { event: 'StopFailure', arg: 'stop-failure', timeout: 10, async: true },
   { event: 'PostToolUse', arg: 'post-tool-use', timeout: 10, async: true },
   { event: 'UserPromptSubmit', arg: 'user-prompt-submit', timeout: 10, async: true },
+  { event: 'PreToolUse', arg: 'pre-tool-use', timeout: 10, async: true },
+  { event: 'SessionEnd', arg: 'session-end', timeout: 5, async: true },
 ];
 
 // Exec form (command + args, no shell): the same entry works on macOS, Linux and Windows.
@@ -763,7 +769,9 @@ async function cmdPair(args, flags) {
     claude_version: claudeVersion,
   });
   if (!STANDALONE) installScript();
-  if (!exists(P.keyFile)) fs.writeFileSync(P.keyFile, data.token, { mode: 0o600 });
+  // No an_ key saved: the computer token serves `monish ping` and the skill. A computer token left by
+  // an earlier pairing died with it, so it is replaced; an an_ key is never touched.
+  if (!exists(P.keyFile) || isComputerToken(readText(P.keyFile))) writeAtomic(P.keyFile, data.token, 0o600);
 
   say('Paired with your iPhone.');
   try {
@@ -811,7 +819,14 @@ async function cmdStatus() {
           (phone.notifications === false ? ', notifications not allowed yet' : ''),
       );
       const min = Math.round(Number(s.answer_window_s) / 60);
-      say(`Answer window: ${min >= 1 ? `${min} min` : `${s.answer_window_s} s`}. Quiet at the keyboard: ${s.quiet_at_keyboard === false ? 'off' : 'on'}.`);
+      say(
+        `Answer window: ${min >= 1 ? `${min} min` : `${s.answer_window_s} s`} (set in Monish on your iPhone). ` +
+          `Quiet at the keyboard: ${s.quiet_at_keyboard === false ? 'off' : 'on'}.`,
+      );
+      if (Number.isInteger(comp.rules_count)) {
+        const n = comp.rules_count;
+        say(`Always allowed: ${n === 0 ? 'nothing yet' : `${n} rule${n > 1 ? 's' : ''}, listed in Monish (Setup, Computers, ${fresh.name})`}.`);
+      }
     } else if (status === 401) {
       ok = false;
       say(`Paired: no. ${UNPAIRED}`);
@@ -860,7 +875,7 @@ async function cmdTest() {
     agent: clip(`Claude Code · ${c.name || 'Computer'}`, 40),
     session: { id: '00000000', project: clip(project(), 40), title: null, agent_type: null },
     test: true,
-    permission: { tool: 'Bash', content: 'echo "Hello from Monish"', description: null, session_rule: null, plan: null },
+    permission: { tool: 'Bash', content: 'echo "Hello from Monish"', description: null, always: null, new_file: false, plan: null },
   };
   const { status, data } = await http('POST', `${apiBase(c)}/v1/requests`, { token: c.token, body });
   if (status === 409 && data.error === 'app_update_required') fail('Your iPhone has an older Monish: update it from the App Store, then run this again.');
@@ -926,9 +941,9 @@ async function cmdUninstall(flags) {
     else if (status === 401) step('Already unpaired from your iPhone');
     else step(`Could not reach ${hostOf(apiBase(c))} (${status || data.message}): remove "${c.name}" in Monish (Setup, Computers)`);
   }
-  // The key file keeps an an_ key (skill, Codex, scripts); the computer token it may hold dies with the pairing.
-  const key = (readText(P.keyFile) || '').trim();
-  const dropKey = flags.all || (c && key === c.token);
+  // The key file keeps an an_ key (skill, Codex, scripts); a computer token it may hold (this pairing's
+  // or an older one's) dies with the pairing.
+  const dropKey = flags.all || isComputerToken(readText(P.keyFile));
   for (const f of [P.computer, P.script, P.runDir, P.log, `${P.log}.1`, ...(dropKey ? [P.keyFile] : [])]) {
     if (exists(f) && removeFile(f)) step(`Deleted ${tilde(f)}`);
   }
@@ -1174,9 +1189,14 @@ function parentGone(ctx) {
 
 // --- requests
 
+// 12 hex of sha256(absolute cwd): the project a rule is bound to; the path never leaves the computer.
+const cwdOf = (input) => path.resolve(String(input.cwd || process.cwd()));
+const projectIdOf = (input) => sha(cwdOf(input)).slice(0, 12);
+const projectOf = (input) => clip(path.basename(cwdOf(input)) || 'shell', 40);
+
 function context(input, c, event) {
   const s8 = session8(input);
-  const proj = clip(path.basename(String(input.cwd || process.cwd())) || 'shell', 40);
+  const proj = projectOf(input);
   const st = readJSON(markerPath(`${s8}.session.json`)) || {};
   return {
     event,
@@ -1189,6 +1209,7 @@ function context(input, c, event) {
     session: {
       id: s8,
       project: proj,
+      project_id: projectIdOf(input),
       title: typeof st.title === 'string' && st.title ? clip(st.title, 60) : null,
       agent_type: input.agent_type ? clip(String(input.agent_type), 30) : null,
     },
@@ -1197,6 +1218,8 @@ function context(input, c, event) {
   };
 }
 
+// { req } a request was created; { rule } an always / session rule answered without one (200, id
+// null); { none } a dry run found no rule; { error } anything else.
 async function createRequest(c, body) {
   const url = `${apiBase(c)}/v1/requests`;
   let r = await http('POST', url, { token: c.token, body });
@@ -1204,10 +1227,10 @@ async function createRequest(c, body) {
     await sleep(2000);
     r = await http('POST', url, { token: c.token, body });
   }
-  if ((r.status === 201 || r.status === 200) && typeof r.data.id === 'string') {
-    refreshSettings(c, r.data.settings);
-    return { req: r.data };
-  }
+  if (r.status === 201 || r.status === 200) refreshSettings(c, r.data.settings);
+  if ((r.status === 201 || r.status === 200) && typeof r.data.id === 'string') return { req: r.data };
+  if (r.status === 200 && r.data.state === 'answered' && isObject(r.data.answer)) return { rule: r.data.answer };
+  if (r.status === 200 && r.data.state === 'none') return { none: true };
   return { error: r };
 }
 
@@ -1277,7 +1300,7 @@ function unpairedNotice() {
 }
 
 // The iPhone runs Monish 1.0.x and cannot answer: send the old "Needs you" ping, the terminal decides.
-async function createFailed(c, ctx, r, legacyBody) {
+async function createFailed(c, ctx, r = { status: 0, data: {} }, legacyBody) {
   const err = r.data.error || r.data.message || '';
   logLine(`${ctx.event} create failed ${r.status} ${err}`);
   if (r.status === 409 && err === 'app_update_required' && legacyBody) {
@@ -1300,14 +1323,30 @@ function relPath(p, cwd) {
   return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : tilde(p);
 }
 
-function sessionSuggestion(input) {
-  const list = Array.isArray(input.permission_suggestions) ? input.permission_suggestions : [];
-  return list.find((s) => isObject(s) && s.type === 'addRules' && Array.isArray(s.rules) && s.rules.length && isObject(s.rules[0])) || null;
+// What "Always allow" and "Allow for this session" would cover (contract v2 § 1.1), or null.
+const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+function alwaysOf(tool, ti, cwd) {
+  if (tool === 'Bash' || tool === 'PowerShell') {
+    const cmd = typeof ti.command === 'string' ? ti.command : '';
+    return cmd && cmd.length <= 2000 ? { scope: 'command', value: cmd } : null; // a cut command is no longer exact
+  }
+  if (tool === 'WebFetch') {
+    try {
+      const host = new URL(String(ti.url)).hostname.toLowerCase();
+      return host ? { scope: 'site', value: host } : null;
+    } catch {
+      return null;
+    }
+  }
+  if (EDIT_TOOLS.includes(tool)) {
+    const file = ti.notebook_path || ti.file_path;
+    if (typeof file !== 'string' || !file) return null;
+    const rel = path.relative(cwd, path.resolve(cwd, file));
+    return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? { scope: 'edits', value: '*' } : null;
+  }
+  if (['Read', 'ExitPlanMode', 'AskUserQuestion'].includes(tool) || !tool) return null;
+  return { scope: 'tool', value: clip(tool, 200) }; // mcp__…, WebSearch, any other tool
 }
-const ruleText = (s) => {
-  const r = s.rules[0];
-  return r.ruleContent ? `${r.toolName}(${r.ruleContent})` : String(r.toolName || '');
-};
 
 function permissionOf(input, ti, tool) {
   const cwd = String(input.cwd || process.cwd());
@@ -1324,12 +1363,13 @@ function permissionOf(input, ti, tool) {
   const plan = tool === 'ExitPlanMode' && typeof ti.plan === 'string' ? ti.plan : null;
   if (plan !== null) content = ((plan.match(/^#{1,6}\s+(.+)$/m) || [])[1] || '').trim();
   else if (typeof content !== 'string' || !content) content = JSON.stringify(ti);
-  const s = plan === null ? sessionSuggestion(input) : null;
+  const file = tool === 'Write' && typeof ti.file_path === 'string' && ti.file_path ? path.resolve(cwd, ti.file_path) : null;
   return {
     tool: clip(tool, 80),
     content: clip(content, 2000),
     description: typeof ti.description === 'string' && ti.description ? clip(ti.description, 200) : null,
-    session_rule: s ? clip(ruleText(s), 120) : null,
+    always: plan === null ? alwaysOf(tool, ti, path.resolve(cwd)) : null,
+    new_file: Boolean(file && !exists(file)),
     plan: plan === null ? null : clip(plan, 30000),
   };
 }
@@ -1385,11 +1425,8 @@ function permissionOutput(kind, input, ti, answer) {
   const status = String(answer.status || '');
   const text = typeof answer.text === 'string' ? answer.text.trim() : '';
   const plan = input.tool_name === 'ExitPlanMode';
-  if (status === 'allow' || status === 'approve' || status === 'approved') return out(plan ? { behavior: 'allow', updatedInput: ti } : { behavior: 'allow' });
-  if (status === 'allow_session' && !plan) {
-    const s = sessionSuggestion(input);
-    return out(s ? { behavior: 'allow', updatedPermissions: [{ ...s, destination: 'session' }] } : { behavior: 'allow' });
-  }
+  // allow, allow_session, allow_always: the same plain allow, the rule lives on the Worker (contract v2 § 1.3).
+  if (status.startsWith('allow') || status === 'approve' || status === 'approved') return out(plan ? { behavior: 'allow', updatedInput: ti } : { behavior: 'allow' });
   if (status === 'deny' || status === 'denied' || status === 'text') {
     let message = text ? `Denied from the user's phone. Reason: ${text}` : "Denied from the user's phone.";
     if (plan) message = text ? `The user wants changes to the plan (from their phone): ${text}` : 'The user rejected the plan from their phone.';
@@ -1422,8 +1459,24 @@ async function hookPermission(input, c) {
     payload = { questions };
   } else payload = { permission: permissionOf(input, ti, tool) };
 
-  // Another permission hook (an auto-approver, say) may decide in a few seconds: give it 10 s.
-  if (otherPermissionHooks(c.claude_settings || P.settings, input.cwd, tool).length) {
+  const allowOut = () => ({ stdout: { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } } });
+  const envelope = (delivery) => ({ kind, delivery, agent: ctx.agentLabel, session: ctx.session, test: false, ...payload });
+  const always = payload.permission ? payload.permission.always : null;
+  const p = ctx.presence;
+  const others = otherPermissionHooks(c.claude_settings || P.settings, input.cwd, tool).length > 0;
+  let req = null;
+
+  // Another permission hook (an auto-approver, say) may decide in a few seconds: give it 10 s, unless
+  // an always / session rule on the Worker allows this right away (dry run: nothing is created).
+  if (others && always) {
+    const dry = await createRequest(c, { ...envelope(p.state === 'present' ? 'note' : 'alert'), dry_run: true });
+    if (dry.rule) {
+      logLine(`permission-request allowed by a rule (${always.scope}, dry run)`);
+      return allowOut();
+    }
+    if (dry.req) req = dry.req; // a server without dry runs created the request: use it, no grace
+  }
+  if (others && !req) {
     const deadline = Date.now() + GRACE_S * 1000;
     while (Date.now() < deadline) {
       const r = CANCEL.reason || settled();
@@ -1435,13 +1488,18 @@ async function hookPermission(input, c) {
     }
   }
 
-  const p = ctx.presence;
-  if (p.state === 'present' && (idleNow(p) ?? 0) >= IDLE_S) p.state = 'absent'; // walked away during the grace
-  const delivery = p.state === 'present' ? 'note' : 'alert';
-  const body = { kind, delivery, agent: ctx.agentLabel, session: ctx.session, test: false, ...payload };
-  const { req, error } = await createRequest(c, body);
-  const legacy = kind === 'question' ? 'Claude has a question for you' : `Claude needs your permission to use ${tool}`;
-  if (!req) return createFailed(c, ctx, error, legacy);
+  if (!req && p.state === 'present' && (idleNow(p) ?? 0) >= IDLE_S) p.state = 'absent'; // walked away during the grace
+  const delivery = req ? String(req.delivery || (p.state === 'present' ? 'note' : 'alert')) : p.state === 'present' ? 'note' : 'alert';
+  if (!req) {
+    const r = await createRequest(c, envelope(delivery));
+    if (r.rule) {
+      logLine(`permission-request allowed by a rule (${always ? always.scope : '?'}${r.rule.rule && r.rule.rule.session ? ', session' : ''})`);
+      return allowOut();
+    }
+    const legacy = kind === 'question' ? 'Claude has a question for you' : `Claude needs your permission to use ${tool}`;
+    if (!r.req) return createFailed(c, ctx, r.error, legacy);
+    req = r.req;
+  }
   ctx.created = Date.now();
   CANCEL.reqId = req.id;
   logLine(`permission-request ${req.id} ${kind}${payload.permission && payload.permission.plan !== null ? ' plan' : ''} ${delivery} presence=${p.source}:${p.state}`);
@@ -1529,8 +1587,9 @@ async function hookStop(input, c) {
   const ctx = context(input, c, 'stop');
   touch(MARK.stop(ctx.s8)); // closes this session's open requests and the previous turn
   const mine = mtimeOf(MARK.stop(ctx.s8));
-  if (!notifyOf(c).turn_end) return null;
   const message = typeof input.last_assistant_message === 'string' ? input.last_assistant_message.trim() : '';
+  await sessionEvent(c, input, 'stop', { message: message ? clip(message.replace(/\s+/g, ' '), 120) : null });
+  if (!notifyOf(c).turn_end) return null;
   if (!message) return null;
   // claude -p waits for this hook before printing its result: a scripted run never waits for the iPhone.
   if (printMode(ctx.ppid)) return null;
@@ -1578,12 +1637,84 @@ async function hookStopFailure(input, c) {
   return r.status === 401 ? unpairedNotice() : null;
 }
 
+// --- session events (contract v2 § 2.2): they drive the session card on the iPhone lock screen.
+// Nothing in claude -p, nothing when not paired; errors are ignored (async hooks, 5 s at most, no retry).
+
+const cardFile = (s8) => markerPath(`${s8}.card`);
+function saveCard(s8, st) {
+  try {
+    fs.mkdirSync(P.runDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(cardFile(s8), JSON.stringify(st));
+  } catch {
+    // the next event checks -p again and may send one more tool event
+  }
+}
+
+// File name without its folder, host of the URL, first line of the command; nothing else.
+function toolTarget(ti) {
+  if (typeof ti.command === 'string' && ti.command.trim()) return clip(ti.command.trim().split('\n')[0], 80);
+  if (typeof ti.url === 'string') {
+    try {
+      return clip(new URL(ti.url).hostname.toLowerCase(), 80) || null;
+    } catch {
+      return null;
+    }
+  }
+  const file = ti.notebook_path || ti.file_path;
+  return typeof file === 'string' && file ? clip(path.basename(file), 80) : null;
+}
+
+async function sessionEvent(c, input, event, extra = {}) {
+  if (!input.session_id) return;
+  const s8 = session8(input);
+  const st = readJSON(cardFile(s8)) || {};
+  if (st.ppid !== process.ppid || typeof st.print !== 'boolean') Object.assign(st, { ppid: process.ppid, print: printMode(process.ppid) });
+  const now = Date.now();
+  if (st.print) return saveCard(s8, st);
+  if (event === 'tool') {
+    if (st.tool_at && now - st.tool_at < TOOL_EVENT_S * 1000) return saveCard(s8, st);
+    st.tool_at = now;
+  } else st.tool_at = 0; // the first tool after a prompt or a turn end goes at once: it changes the card's state
+  st.sent = true;
+  saveCard(s8, st);
+  const meta = readJSON(markerPath(`${s8}.session.json`)) || {};
+  const title = typeof input.session_title === 'string' && input.session_title ? input.session_title : meta.title;
+  const body = { event, project: projectOf(input), project_id: projectIdOf(input), title: title ? clip(title, 60) : null, tool: null, message: null, ...extra };
+  const r = await http('POST', `${apiBase(c)}/v1/sessions/${s8}/events`, { token: c.token, body, timeoutMs: 5000 });
+  logLine(`session ${s8} ${event} ${r.status} ${r.data.state || r.data.error || r.data.message || ''}${r.data.card ? ` card=${r.data.card}` : ''}`);
+}
+
+async function hookPreToolUse(input, c) {
+  const ti = isObject(input.tool_input) ? input.tool_input : {};
+  const name = String(input.tool_name || '');
+  if (!name) return;
+  await sessionEvent(c, input, 'tool', { tool: { name: clip(name, 80), target: toolTarget(ti) } });
+}
+
+// SessionEnd has 1.5 s for every hook: send only for a session that had events, never wait long.
+async function hookSessionEnd(input, c) {
+  const s8 = session8(input);
+  const st = readJSON(cardFile(s8));
+  if (!isObject(st) || !st.sent || st.print) return;
+  try {
+    fs.unlinkSync(cardFile(s8));
+  } catch {
+    // already swept
+  }
+  const r = await http('POST', `${apiBase(c)}/v1/sessions/${s8}/events`, {
+    token: c.token,
+    body: { event: 'end', project: projectOf(input), project_id: projectIdOf(input), title: null, tool: null, message: null },
+    timeoutMs: 1200,
+  });
+  logLine(`session ${s8} end ${r.status} ${r.data.state || r.data.error || r.data.message || ''}`);
+}
+
 function hookPostToolUse(input) {
   touch(MARK.post(session8(input), agentOf(input), fingerprint(input.tool_input)));
   sweepRun();
 }
 
-function hookUserPrompt(input) {
+async function hookUserPrompt(input, c) {
   const prompt = typeof input.prompt === 'string' ? input.prompt : '';
   if (prompt.trimStart().startsWith('<task-notification>')) return; // background work reporting, not the user
   const s8 = session8(input);
@@ -1597,6 +1728,7 @@ function hookUserPrompt(input) {
     // duration and title are optional
   }
   sweepRun();
+  if (c) await sessionEvent(c, input, 'prompt');
 }
 
 async function cmdHook(event) {
@@ -1613,12 +1745,14 @@ async function cmdHook(event) {
     if (!isObject(input)) input = {};
     process.stdin.pause();
     if (event === 'post-tool-use') hookPostToolUse(input);
-    else if (event === 'user-prompt-submit') hookUserPrompt(input);
     else {
       const c = readComputer();
-      if (c) {
-        claudeHeader = c.claude_version || null;
-        if (event === 'permission-request') result = await hookPermission(input, c);
+      if (c) claudeHeader = c.claude_version || null;
+      if (event === 'user-prompt-submit') await hookUserPrompt(input, c);
+      else if (c) {
+        if (event === 'pre-tool-use') await hookPreToolUse(input, c);
+        else if (event === 'session-end') await hookSessionEnd(input, c);
+        else if (event === 'permission-request') result = await hookPermission(input, c);
         else if (event === 'elicitation') result = await hookElicitation(input, c);
         else if (event === 'stop') result = await hookStop(input, c);
         else if (event === 'stop-failure') result = await hookStopFailure(input, c);
@@ -1666,8 +1800,10 @@ const HELP = `Monish ${VERSION}: Claude Code and your other agents on your iPhon
 Claude Code
   npx monish pair <code>      pair this computer with the 6-digit code shown in the Monish app and add
                               the Claude Code hooks: permissions, questions, plans and the end of each
-                              turn reach your iPhone, and you answer from there
-  npx monish status           check the pairing, the hooks, Node and Claude Code
+                              turn reach your iPhone, you answer from there (Allow, Allow for this
+                              session, Always allow, Deny), and each session gets a lock screen card
+  npx monish status           check the pairing, the answer window, the always-allowed rules, the hooks
+                              and Claude Code
   npx monish test             send a test permission request to your iPhone (nothing is run)
   npx monish uninstall        remove the hooks and unpair this computer (--all: also the key, the skill
                               and the Codex and Cursor rules)
