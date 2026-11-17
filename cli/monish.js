@@ -16,6 +16,9 @@ const { spawnSync } = require('child_process');
 process.removeAllListeners('warning');
 
 const VERSION = require('../package.json').version;
+// Set by install/entry.js in the standalone binary (bun build --compile): no Node, no npx, the hooks
+// run that binary and the bundled files come as text.
+const STANDALONE = globalThis.MONISH_STANDALONE || null;
 const API = 'https://monish.cc';
 const SKILL_URL = `${API}/skill`;
 const SEND_URL = `${API}/v1/send`;
@@ -60,7 +63,9 @@ const INTERACTIVE = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
 // ---------------------------------------------------------------- small helpers
 
-const say = (msg = '') => process.stdout.write(`${msg}\n`);
+const runAs = (msg) =>
+  STANDALONE ? String(msg).replace(/^( +)npx monish (.*?\S)( {2,})/gm, '$1monish $2$3    ').replace(/npx monish/g, 'monish') : msg;
+const say = (msg = '') => process.stdout.write(`${runAs(msg)}\n`);
 const step = (msg) => say(`  ${msg}`);
 const tilde = (p) => (p.startsWith(HOME) ? `~${p.slice(HOME.length)}` : p);
 const exists = (p) => {
@@ -92,7 +97,7 @@ const sleep = (ms, signal) =>
   });
 
 function fail(msg, code = 1) {
-  process.stderr.write(`${msg}\n`);
+  process.stderr.write(`${runAs(msg)}\n`);
   process.exit(code);
 }
 
@@ -332,7 +337,7 @@ async function installSkill() {
     // offline: fall back to the copy shipped with this package
   }
   if (!text) {
-    text = fs.readFileSync(BUNDLED_SKILL, 'utf8');
+    text = STANDALONE ? STANDALONE.skill : fs.readFileSync(BUNDLED_SKILL, 'utf8');
     from = 'the copy in this package';
   }
   fs.mkdirSync(path.dirname(P.skillFile), { recursive: true });
@@ -350,7 +355,7 @@ function hookSnippet() {
 
 function installHook() {
   fs.mkdirSync(P.configDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(P.hookFile, fs.readFileSync(BUNDLED_HOOK, 'utf8'), { mode: 0o755 });
+  fs.writeFileSync(P.hookFile, STANDALONE ? STANDALONE.hook : fs.readFileSync(BUNDLED_HOOK, 'utf8'), { mode: 0o755 });
   fs.chmodSync(P.hookFile, 0o755);
 
   const { raw, settings, error } = readSettings();
@@ -414,16 +419,21 @@ const HOOKS = [
 ];
 
 // Exec form (command + args, no shell): the same entry works on macOS, Linux and Windows.
+// Standalone: the installed binary itself; npx: Node and the copy of this file in the config folder.
 function hookEntry(h) {
-  const e = { type: 'command', command: process.execPath, args: [P.script, 'hook', h.arg], timeout: h.timeout };
+  const args = STANDALONE ? ['hook', h.arg] : [P.script, 'hook', h.arg];
+  const e = { type: 'command', command: process.execPath, args, timeout: h.timeout };
   if (h.async) e.async = true;
   if (h.asyncRewake) e.asyncRewake = true;
   return e;
 }
 
 const slashes = (s) => String(s).replace(/\\/g, '/');
+const isBinaryHook = (h) =>
+  isObject(h) && /(^|\/)monish(\.exe)?$/i.test(slashes(h.command || '')) && Array.isArray(h.args) && h.args[0] === 'hook';
 function isOurHook(h) {
   if (!isObject(h)) return false;
+  if (isBinaryHook(h)) return true;
   const parts = [h.command, ...(Array.isArray(h.args) ? h.args : [])].filter((x) => typeof x === 'string').map(slashes);
   return parts.some((s) => s.includes(OUR_SCRIPT) || s.includes(slashes(P.script)));
 }
@@ -752,7 +762,7 @@ async function cmdPair(args, flags) {
     claude_settings: P.settings,
     claude_version: claudeVersion,
   });
-  installScript();
+  if (!STANDALONE) installScript();
   if (!exists(P.keyFile)) fs.writeFileSync(P.keyFile, data.token, { mode: 0o600 });
 
   say('Paired with your iPhone.');
@@ -821,7 +831,11 @@ async function cmdStatus() {
     if (n < HOOKS.length) ok = false;
     say(`Claude Code hooks: ${n} of ${HOOKS.length} in ${tilde(settingsFile)}${n < HOOKS.length && c ? '. Run npx monish pair again to restore them.' : ''}`);
     const entry = Object.values(ours)[0];
-    if (entry) {
+    if (entry && isBinaryHook(entry)) {
+      const binOk = exists(entry.command);
+      if (!binOk) ok = false;
+      say(`Monish binary: ${tilde(entry.command)}${binOk ? '' : ' is missing. Install Monish again (https://monish.cc/install.sh).'}`);
+    } else if (entry) {
       const nodeOk = exists(entry.command);
       const scriptOk = Array.isArray(entry.args) && exists(entry.args[0]);
       if (!nodeOk || !scriptOk) ok = false;
