@@ -4,6 +4,10 @@
 # Contract: https://monish.cc/skill, section 4. Always exits 0, never blocks more than 5 s.
 # MONISH_DRY_RUN=1 prints the request body (key masked) instead of sending it.
 
+# Once this computer is paired (npx monish pair), the Claude Code hooks written by pair ask the
+# iPhone directly: this ping would ring a second time.
+[ -f "$HOME/.config/monish/computer.json" ] && exit 0
+
 key="${MONISH_KEY:-$(cat "$HOME/.config/monish/key" 2>/dev/null)}"
 [ -z "$key" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
