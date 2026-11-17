@@ -1502,7 +1502,10 @@ async function hookPermission(input, c) {
   }
   ctx.created = Date.now();
   CANCEL.reqId = req.id;
-  logLine(`permission-request ${req.id} ${kind}${payload.permission && payload.permission.plan !== null ? ' plan' : ''} ${delivery} presence=${p.source}:${p.state}`);
+  logLine(
+    `permission-request ${req.id} ${kind}${payload.permission && payload.permission.plan !== null ? ' plan' : ''} ${delivery} ` +
+      `wait=${req.wait_s}s presence=${p.source}:${p.state}${always ? ` always=${always.scope}` : ''}`,
+  );
 
   let alerted = delivery === 'alert';
   const onTick = () => {
@@ -1604,7 +1607,7 @@ async function hookStop(input, c) {
   if (!req) return createFailed(c, ctx, error, null);
   ctx.created = Date.now();
   CANCEL.reqId = req.id;
-  logLine(`stop ${req.id} turn ${delivery} presence=${p.source}:${p.state}`);
+  logLine(`stop ${req.id} turn ${delivery} wait=${req.wait_s}s presence=${p.source}:${p.state}`);
   const settled = () => {
     if (mtimeOf(MARK.stop(ctx.s8)) > mine) return 'superseded';
     if (mtimeOf(MARK.prompt(ctx.s8)) >= ctx.started) return 'answered_on_computer';
