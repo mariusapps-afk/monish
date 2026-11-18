@@ -161,6 +161,7 @@ function parseArgs(argv) {
     else if (name === 'name') flags.name = value();
     else if (name === 'api') flags.api = value();
     else if (name === 'all') flags.all = true;
+    else if (name === 'replace') flags.replace = true;
     else if (name === 'no-skill') flags.skill = false;
     else if (name === 'no-hook') flags.hook = false;
     else if (name === 'codex') flags.codex = true;
@@ -555,7 +556,7 @@ function otherPermissionHooks(userSettings, cwd, tool) {
 
 const otherHookNote = (cmd) =>
   `Another permission hook is installed (${clip(cmd.split(HOME).join("~"), 120)}). ` +
-  'Monish waits 10 s before asking your iPhone, and the first answer wins.';
+  'Monish waits 10 s before asking your iPhone or applying an always rule, and the first answer wins.';
 
 // ---------------------------------------------------------------- Codex and Cursor
 
@@ -726,9 +727,32 @@ function pairProblem(status, data, base) {
   return `${hostOf(base)} answered ${status}${data.error ? ` ${data.error}` : ''}${data.message ? `: ${data.message}` : ''}.`;
 }
 
+// Writes our hooks into the Claude Code settings (read and checked by the caller) and says so.
+function writeOurHooks(raw, settings) {
+  const had = Object.keys(ourEntries(settings)).length > 0;
+  try {
+    addOurHooks(settings);
+    const target = writeSettings(P.settings, raw, settings, true);
+    say(
+      `Claude Code hooks ${had ? 'updated in' : 'added to'} ${tilde(P.settings)}` +
+        `${target !== P.settings ? ` (link to ${tilde(target)})` : ''}${raw !== null ? ' (backup saved)' : ''}.`,
+    );
+  } catch (e) {
+    fail(
+      `Could not write ${tilde(P.settings)} (${e.code || e.message}). Add this to it by hand, ` +
+        `merged with your existing "hooks":\n${ourHooksSnippet().replace(/^/gm, '    ')}`,
+    );
+  }
+  for (const cmd of otherPermissionHooks(P.settings, process.cwd(), null)) say(otherHookNote(cmd));
+  if (pluginOutdated()) say('Your Monish plugin for Claude Code is out of date: run /plugin update monish in Claude Code, or it pings a second time.');
+  if (process.platform === 'win32') say('Windows support is in beta.');
+  say('Start claude as usual. To check the setup: npx monish status');
+}
+
 async function cmdPair(args, flags) {
   const code = args.join('').replace(/[\s-]/g, '');
-  if (!/^\d{6}$/.test(code)) fail('Usage: npx monish pair <code>, with the 6-digit code shown in the Monish app.');
+  const usage = 'Usage: npx monish pair <code>, with the 6-digit code shown in the Monish app.';
+  if (code && !/^\d{6}$/.test(code)) fail(usage);
   if (!exists(P.claudeDir) && !onPath('claude')) {
     fail(`Claude Code settings not found in ${tilde(P.claudeDir)}. Install Claude Code, then run this again.`);
   }
@@ -738,7 +762,7 @@ async function cmdPair(args, flags) {
   if (shape) {
     fail(
       `${tilde(P.settings)} was left untouched because ${shape}, and this computer was not paired.\n` +
-        `Fix the file, or add this to it by hand (merge with your existing "hooks"), then run npx monish pair ${code} again:\n` +
+        `Fix the file, or add this to it by hand (merge with your existing "hooks"), then run npx monish pair ${code || '<code>'} again:\n` +
         ourHooksSnippet().replace(/^/gm, '    '),
     );
   }
@@ -746,6 +770,35 @@ async function cmdPair(args, flags) {
   const base = String(flags.api || API).replace(/\/+$/, '');
   const claudeVersion = readClaudeVersion();
   claudeHeader = claudeVersion;
+  const old = readComputer();
+
+  // Already paired (running the install line again to update, say): keep this computer and its always
+  // rules, rewrite the hooks only. The code is not used. --replace pairs anew and drops the rules.
+  if (old && !flags.replace && (!flags.api || base === apiBase(old))) {
+    const { status, data } = await http('GET', `${apiBase(old)}/v1/computers/self`, { token: old.token, timeoutMs: 10000 });
+    if (status === 200) {
+      const comp = isObject(data.computer) ? data.computer : {};
+      const name = comp.name || old.name;
+      saveComputer({
+        ...old,
+        name,
+        settings: isObject(comp.settings) ? comp.settings : old.settings,
+        claude_settings: P.settings,
+        claude_version: claudeVersion || old.claude_version || null,
+      });
+      if (!STANDALONE) installScript();
+      const n = Number.isInteger(comp.rules_count) ? comp.rules_count : null;
+      say(`Already paired with your iPhone as "${name}"${n ? `: your ${n} always-allowed rule${n > 1 ? 's are' : ' is'} kept` : ''}.`);
+      if (code) say(`The code ${code} was not used. To pair this computer with another iPhone instead: npx monish pair <code> --replace (its always-allowed rules are removed).`);
+      writeOurHooks(raw, settings);
+      return;
+    }
+    if (status !== 401) {
+      fail(`${pairProblem(status, data, apiBase(old))} This computer is still paired; nothing was changed.`);
+    }
+  }
+  if (!code) fail(old ? UNPAIRED : usage);
+
   const name = computerName(flags.name);
   const body = { code, name, platform: clip(process.platform, 16), cli_version: VERSION };
   if (claudeVersion) body.claude_version = claudeVersion;
@@ -753,9 +806,11 @@ async function cmdPair(args, flags) {
   if (status !== 201 && status !== 200) fail(pairProblem(status, data, base));
   if (!/^mc_/.test(String(data.token || ''))) fail(`${hostOf(base)} answered without a computer token. Run the command again.`);
 
-  // Re-pairing: the previous pairing of this computer goes away once the new one exists.
-  const old = readComputer();
-  if (old && old.token !== data.token) await http('DELETE', `${apiBase(old)}/v1/computers/self`, { token: old.token, timeoutMs: 5000 });
+  // Re-pairing: the previous pairing of this computer goes away, with its rules, once the new one exists.
+  if (old && old.token !== data.token) {
+    const d = await http('DELETE', `${apiBase(old)}/v1/computers/self`, { token: old.token, timeoutMs: 5000 });
+    if (d.status === 200) say(`The previous pairing of this computer ("${old.name}") and its always-allowed rules were removed.`);
+  }
 
   const computer = isObject(data.computer) ? data.computer : {};
   saveComputer({
@@ -774,23 +829,7 @@ async function cmdPair(args, flags) {
   if (!exists(P.keyFile) || isComputerToken(readText(P.keyFile))) writeAtomic(P.keyFile, data.token, 0o600);
 
   say('Paired with your iPhone.');
-  try {
-    addOurHooks(settings);
-    const target = writeSettings(P.settings, raw, settings, true);
-    say(
-      `Claude Code hooks added to ${tilde(P.settings)}` +
-        `${target !== P.settings ? ` (link to ${tilde(target)})` : ''}${raw !== null ? ' (backup saved)' : ''}.`,
-    );
-  } catch (e) {
-    fail(
-      `Could not write ${tilde(P.settings)} (${e.code || e.message}). Add this to it by hand, ` +
-        `merged with your existing "hooks":\n${ourHooksSnippet().replace(/^/gm, '    ')}`,
-    );
-  }
-  for (const cmd of otherPermissionHooks(P.settings, process.cwd(), null)) say(otherHookNote(cmd));
-  if (pluginOutdated()) say('Your Monish plugin for Claude Code is out of date: run /plugin update monish in Claude Code, or it pings a second time.');
-  if (process.platform === 'win32') say('Windows support is in beta.');
-  say('Start claude as usual. To check the setup: npx monish status');
+  writeOurHooks(raw, settings);
 }
 
 async function cmdStatus() {
@@ -968,7 +1007,9 @@ async function cmdUninstall(flags) {
   }
   say(
     flags.all
-      ? 'Done. Monish is removed from this computer. To erase the iPhone side too, use Delete account in the app.'
+      ? 'Done. Monish is removed from this computer' +
+          (STANDALONE ? `, except the monish command itself: delete ${tilde(process.execPath)} and ${process.platform === 'win32' ? 'its folder from your user Path' : 'the line marked "# added by monish" in your shell startup file'}` : '') +
+          '. To erase the iPhone side too, use Delete account in the app.'
       : `Done. ${dropKey ? 'The' : 'Your key, the'} skill and the Codex and Cursor rules are kept, if any (npx monish uninstall --all removes them too).`,
   );
 }
@@ -1325,9 +1366,65 @@ function relPath(p, cwd) {
 
 // What "Always allow" and "Allow for this session" would cover (contract v2 § 1.1), or null.
 const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+// Read-only tools ask only for a path outside the project: a rule on the tool would open the whole disk.
+const NO_RULE_TOOLS = ['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'ExitPlanMode', 'AskUserQuestion'];
+// Files that change what Claude Code, git or an editor run or allow: every edit there is asked, rule or not.
+const CONFIG_DIRS = ['.claude', '.git', '.vscode', '.idea', '.husky'];
+const CONFIG_FILES = ['.mcp.json', '.envrc'];
+const CASELESS = process.platform === 'darwin' || process.platform === 'win32';
+const norm = (p) => (CASELESS ? p.toLowerCase() : p);
+
+function realOrSelf(p) {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
+// The real path of a file that may not exist yet: its nearest existing folder, resolved, plus the rest.
+function realTarget(file) {
+  let dir = file;
+  const rest = [];
+  while (!exists(dir)) {
+    const up = path.dirname(dir);
+    if (up === dir) return file;
+    rest.unshift(path.basename(dir));
+    dir = up;
+  }
+  return path.join(realOrSelf(dir), ...rest);
+}
+
+// The home folder, a folder above it or a disk root is not a project: no rule there, for any tool.
+function broadFolder(cwd) {
+  const c = norm(realOrSelf(cwd));
+  if (path.parse(c).root === c) return true;
+  const homes = [os.homedir()];
+  try {
+    homes.push(os.userInfo().homedir);
+  } catch {
+    // no passwd entry
+  }
+  return homes.filter(Boolean).some((h) => {
+    const home = norm(realOrSelf(path.resolve(h)));
+    return home === c || home.startsWith(c.endsWith(path.sep) ? c : c + path.sep);
+  });
+}
+
+// A file of the project that is not a config file, or null.
+function insideProject(cwd, file) {
+  const rel = path.relative(cwd, file);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  const parts = norm(rel).split(/[\\/]+/);
+  if (parts.some((s) => CONFIG_DIRS.includes(s)) || CONFIG_FILES.includes(parts[parts.length - 1])) return null;
+  return rel;
+}
+
 function alwaysOf(tool, ti, cwd) {
+  if (!tool || NO_RULE_TOOLS.includes(tool) || broadFolder(cwd)) return null;
   if (tool === 'Bash' || tool === 'PowerShell') {
     const cmd = typeof ti.command === 'string' ? ti.command : '';
+    if (ti.dangerouslyDisableSandbox === true) return null; // a rule would also cover the sandboxed run
     return cmd && cmd.length <= 2000 ? { scope: 'command', value: cmd } : null; // a cut command is no longer exact
   }
   if (tool === 'WebFetch') {
@@ -1341,10 +1438,11 @@ function alwaysOf(tool, ti, cwd) {
   if (EDIT_TOOLS.includes(tool)) {
     const file = ti.notebook_path || ti.file_path;
     if (typeof file !== 'string' || !file) return null;
-    const rel = path.relative(cwd, path.resolve(cwd, file));
-    return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? { scope: 'edits', value: '*' } : null;
+    const abs = path.resolve(cwd, file);
+    // Both the path as written and where it really lands (a link in the project may point elsewhere).
+    const ok = insideProject(cwd, abs) && insideProject(realOrSelf(cwd), realTarget(abs));
+    return ok ? { scope: 'edits', value: '*' } : null;
   }
-  if (['Read', 'ExitPlanMode', 'AskUserQuestion'].includes(tool) || !tool) return null;
   return { scope: 'tool', value: clip(tool, 200) }; // mcp__…, WebSearch, any other tool
 }
 
@@ -1441,8 +1539,9 @@ async function hookPermission(input, c) {
   const tool = String(input.tool_name || '');
   const ti = isObject(input.tool_input) ? input.tool_input : {};
   const kind = tool === 'AskUserQuestion' ? 'question' : 'permission';
-  const notify = notifyOf(c);
-  if (!tool || (kind === 'question' ? !notify.question : !notify.permission)) return null;
+  // Permission notifications off: no request, but an always / session rule still answers.
+  const muted = kind === 'question' ? !notifyOf(c).question : !notifyOf(c).permission;
+  if (!tool || (muted && kind === 'question')) return null;
   const ctx = context(input, c, 'permission-request');
   const fp = fingerprint(input.tool_input);
   const settled = () => {
@@ -1459,24 +1558,21 @@ async function hookPermission(input, c) {
     payload = { questions };
   } else payload = { permission: permissionOf(input, ti, tool) };
 
-  const allowOut = () => ({ stdout: { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } } });
-  const envelope = (delivery) => ({ kind, delivery, agent: ctx.agentLabel, session: ctx.session, test: false, ...payload });
   const always = payload.permission ? payload.permission.always : null;
+  const allowOut = () => ({ stdout: { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } } });
+  // Only a rule that allows answers; anything else leaves the dialog in the terminal.
+  const byRule = (rule, note) => {
+    const ok = isObject(rule) && String(rule.status || '').startsWith('allow');
+    logLine(`permission-request ${ok ? 'allowed by' : 'ignored'} a rule (${always ? always.scope : '?'}${rule && isObject(rule.rule) && rule.rule.session ? ', session' : ''}${note})`);
+    return ok ? allowOut() : null;
+  };
+  const envelope = (delivery) => ({ kind, delivery, agent: ctx.agentLabel, session: ctx.session, test: false, ...payload });
+  if (muted && !always) return null;
   const p = ctx.presence;
-  const others = otherPermissionHooks(c.claude_settings || P.settings, input.cwd, tool).length > 0;
-  let req = null;
 
-  // Another permission hook (an auto-approver, say) may decide in a few seconds: give it 10 s, unless
-  // an always / session rule on the Worker allows this right away (dry run: nothing is created).
-  if (others && always) {
-    const dry = await createRequest(c, { ...envelope(p.state === 'present' ? 'note' : 'alert'), dry_run: true });
-    if (dry.rule) {
-      logLine(`permission-request allowed by a rule (${always.scope}, dry run)`);
-      return allowOut();
-    }
-    if (dry.req) req = dry.req; // a server without dry runs created the request: use it, no grace
-  }
-  if (others && !req) {
+  // Another permission hook (an auto-approver, a gatekeeper) gets 10 s first, rule or not: Claude Code
+  // takes the first decision (2.1.325), so an allow from a rule must never beat that hook's deny.
+  if (otherPermissionHooks(c.claude_settings || P.settings, input.cwd, tool).length > 0) {
     const deadline = Date.now() + GRACE_S * 1000;
     while (Date.now() < deadline) {
       const r = CANCEL.reason || settled();
@@ -1488,18 +1584,18 @@ async function hookPermission(input, c) {
     }
   }
 
-  if (!req && p.state === 'present' && (idleNow(p) ?? 0) >= IDLE_S) p.state = 'absent'; // walked away during the grace
-  const delivery = req ? String(req.delivery || (p.state === 'present' ? 'note' : 'alert')) : p.state === 'present' ? 'note' : 'alert';
-  if (!req) {
-    const r = await createRequest(c, envelope(delivery));
-    if (r.rule) {
-      logLine(`permission-request allowed by a rule (${always ? always.scope : '?'}${r.rule.rule && r.rule.rule.session ? ', session' : ''})`);
-      return allowOut();
-    }
-    const legacy = kind === 'question' ? 'Claude has a question for you' : `Claude needs your permission to use ${tool}`;
-    if (!r.req) return createFailed(c, ctx, r.error, legacy);
-    req = r.req;
+  if (muted) {
+    const dry = await createRequest(c, { ...envelope('note'), dry_run: true });
+    if (dry.req) await closeRequest(c, dry.req.id, 'cancelled'); // a server without dry runs created it
+    return dry.rule ? byRule(dry.rule, ', notifications off') : null;
   }
+  if (p.state === 'present' && (idleNow(p) ?? 0) >= IDLE_S) p.state = 'absent'; // walked away during the grace
+  const delivery = p.state === 'present' ? 'note' : 'alert';
+  const r = await createRequest(c, envelope(delivery));
+  if (r.rule) return byRule(r.rule, '');
+  const legacy = kind === 'question' ? 'Claude has a question for you' : `Claude needs your permission to use ${tool}`;
+  if (!r.req) return createFailed(c, ctx, r.error, legacy);
+  const req = r.req;
   ctx.created = Date.now();
   CANCEL.reqId = req.id;
   logLine(
@@ -1653,9 +1749,17 @@ function saveCard(s8, st) {
   }
 }
 
-// File name without its folder, host of the URL, first line of the command; nothing else.
+// A command line can carry a secret: it goes to the lock screen with the value hidden.
+const maskSecrets = (line) =>
+  line
+    .replace(/\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|AUTH)[A-Za-z0-9_]*=)("[^"]*"|'[^']*'|\S+)/gi, '$1•••')
+    .replace(/\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+\/=-]{8,}/gi, '$1 •••')
+    .replace(/^(\s*(?:mysql|mysqldump|mysqladmin|mariadb)\b.*?\s-p)\S+/, '$1•••')
+    .replace(/(\/\/[^\s:@\/]+:)[^\s@\/]+@/g, '$1•••@');
+
+// File name without its folder, host of the URL, first line of the command (secrets hidden); nothing else.
 function toolTarget(ti) {
-  if (typeof ti.command === 'string' && ti.command.trim()) return clip(ti.command.trim().split('\n')[0], 80);
+  if (typeof ti.command === 'string' && ti.command.trim()) return clip(maskSecrets(ti.command.trim().split('\n')[0]), 80);
   if (typeof ti.url === 'string') {
     try {
       return clip(new URL(ti.url).hostname.toLowerCase(), 80) || null;
@@ -1819,6 +1923,9 @@ Other agents and scripts
 Pair options
   --name "MacBook Pro"   name shown on the iPhone (default: this computer's name)
   --api <url>            another Monish server, for development (default: https://monish.cc)
+  --replace              pair again even if this computer is already paired (with another iPhone,
+                         say): its always-allowed rules are removed. Without it, running pair on a
+                         paired computer only updates the hooks and keeps the rules
 
 Setup options
   --key an_…       the key shown in the Monish app (otherwise asked, or read from $MONISH_KEY)
