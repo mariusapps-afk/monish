@@ -1446,6 +1446,104 @@ function alwaysOf(tool, ti, cwd) {
   return { scope: 'tool', value: clip(tool, 200) }; // mcp__…, WebSearch, any other tool
 }
 
+// ---- diff preview of a file edit (permission.preview): a few lines under the path on the phone.
+const PREVIEW_LINES = 12;
+const PREVIEW_LINE_MAX = 120;
+const PREVIEW_BYTES = 2048;
+const PREVIEW_FILE_MAX = 512 * 1024; // a larger file being rewritten is sent as a path only
+// Files whose lines are secrets by nature: path only.
+const SECRET_FILE = /(^|[\\/])(\.env(\.[^\\/]*)?|\.npmrc|\.netrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519)[^\\/]*|credentials(\.[^\\/]*)?|secrets?(\.[^\\/]*)?|[^\\/]*\.(pem|key|p8|p12|pfx|keystore|jks))$/i;
+
+// A line of code can carry a secret: known key shapes, credentials in a URL, a quoted value or a
+// NAME=value whose name says key, token, secret or password. The value is hidden, the name stays.
+const maskCode = (line) =>
+  line
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----.*/g, '•••')
+    .replace(
+      /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|(?:mc|mp|an)_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)/g,
+      '•••'
+    )
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]{8,}/gi, '$1 •••')
+    .replace(/(\/\/[^\s:@\/]+:)[^\s@\/]+@/g, '$1•••@')
+    .replace(/([A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)[A-Za-z0-9_.-]*["']?\s*[=:]\s*)("[^"]*"|'[^']*'|`[^`]*`)/gi, '$1•••')
+    .replace(/^(\s*(?:export\s+)?[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|AUTH|CREDENTIAL)[A-Za-z0-9_]*=)\S+/i, '$1•••');
+
+const linesOf = (text) => {
+  if (text === '') return [];
+  const l = String(text).replace(/\r\n?/g, '\n').split('\n');
+  if (l.length > 1 && l[l.length - 1] === '') l.pop(); // the newline that ends the text is not a line
+  return l;
+};
+
+// The lines that differ between two texts, in order: what both share is left out (longest common
+// subsequence between the common start and end; past 400 lines a side, the whole middle is changed).
+function changedLines(before, after) {
+  const a = linesOf(before);
+  const b = linesOf(after);
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const x = a.slice(head, a.length - tail);
+  const y = b.slice(head, b.length - tail);
+  const out = [];
+  if (x.length > 400 || y.length > 400) return [...x.map((text) => ({ op: '-', text })), ...y.map((text) => ({ op: '+', text }))];
+  const lcs = Array.from({ length: x.length + 1 }, () => new Uint16Array(y.length + 1));
+  for (let i = x.length - 1; i >= 0; i--) {
+    for (let j = y.length - 1; j >= 0; j--) lcs[i][j] = x[i] === y[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  let i = 0;
+  let j = 0;
+  while (i < x.length || j < y.length) {
+    if (i < x.length && j < y.length && x[i] === y[j]) {
+      i++;
+      j++;
+    } else if (i < x.length && (j === y.length || lcs[i + 1][j] >= lcs[i][j + 1])) out.push({ op: '-', text: x[i++] });
+    else out.push({ op: '+', text: y[j++] });
+  }
+  return out;
+}
+
+// What an Edit, a MultiEdit or a Write over an existing file changes: the removed and added lines
+// of each change, in order, at most 12 lines of 120 characters and 2 KB, obvious secrets hidden.
+// Null (the phone shows the path alone) for a new file, a secret file, a binary or a huge one.
+function previewOf(tool, ti, cwd) {
+  try {
+    if (!['Edit', 'MultiEdit', 'Write'].includes(tool) || typeof ti.file_path !== 'string' || !ti.file_path) return null;
+    if (SECRET_FILE.test(ti.file_path)) return null;
+    let hunks;
+    if (tool === 'Write') {
+      const file = path.resolve(cwd, ti.file_path);
+      if (typeof ti.content !== 'string' || !exists(file) || fs.statSync(file).size > PREVIEW_FILE_MAX || ti.content.length > PREVIEW_FILE_MAX) return null;
+      const current = fs.readFileSync(file, 'utf8');
+      if (current.includes('\u0000')) return null;
+      hunks = [changedLines(current, ti.content)];
+    } else {
+      const edits = tool === 'MultiEdit' ? (Array.isArray(ti.edits) ? ti.edits : []) : [ti];
+      hunks = edits
+        .filter((e) => isObject(e) && typeof e.old_string === 'string' && typeof e.new_string === 'string')
+        .map((e) => changedLines(e.old_string, e.new_string));
+    }
+    const all = hunks.flat();
+    if (!all.length) return null;
+    // the indentation shared by every line is dropped: a phone line is about forty characters wide
+    const indent = Math.min(...all.filter((l) => l.text.trim()).map((l) => l.text.replace(/\t/g, '  ').match(/^ */)[0].length), 1000);
+    const lines = [];
+    let bytes = 0;
+    for (const l of all) {
+      if (lines.length >= PREVIEW_LINES) break;
+      const raw = l.text.replace(/\t/g, '  ').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '');
+      const text = clip(maskCode(raw.trim() ? raw.slice(indent) : ''), PREVIEW_LINE_MAX);
+      bytes += Buffer.byteLength(text) + 1;
+      if (bytes > PREVIEW_BYTES) break;
+      lines.push({ op: l.op, text });
+    }
+    return lines.length ? { kind: 'diff', lines, truncated: lines.length < all.length } : null;
+  } catch {
+    return null; // a preview is a comfort: the request goes with the path alone
+  }
+}
+
 function permissionOf(input, ti, tool) {
   const cwd = String(input.cwd || process.cwd());
   let content = null;
@@ -1469,6 +1567,7 @@ function permissionOf(input, ti, tool) {
     always: plan === null ? alwaysOf(tool, ti, path.resolve(cwd)) : null,
     new_file: Boolean(file && !exists(file)),
     plan: plan === null ? null : clip(plan, 30000),
+    preview: previewOf(tool, ti, path.resolve(cwd)),
   };
 }
 
