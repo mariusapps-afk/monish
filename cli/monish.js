@@ -1206,7 +1206,10 @@ function installSignalHandlers() {
 }
 
 // Claude Code started with -p / --print (scripts, CI, the Agent SDK's streaming input).
+// The Claude desktop app also drives Claude Code over streaming input, with someone in front of
+// it: its sessions are not scripts.
 function printMode(ppid) {
+  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop') return false;
   try {
     const r =
       process.platform === 'win32'
@@ -1921,9 +1924,9 @@ async function sessionEvent(c, input, event, extra = {}) {
   if (!input.session_id) return;
   const s8 = session8(input);
   const st = readJSON(cardFile(s8)) || {};
-  if (st.ppid !== process.ppid || typeof st.print !== 'boolean') Object.assign(st, { ppid: process.ppid, print: printMode(process.ppid) });
+  if (st.ppid !== process.ppid || typeof st.scripted !== 'boolean') Object.assign(st, { ppid: process.ppid, scripted: printMode(process.ppid) });
   const now = Date.now();
-  if (st.print) return saveCard(s8, st);
+  if (st.scripted) return saveCard(s8, st);
   if (event === 'tool') {
     if (st.tool_at && now - st.tool_at < TOOL_EVENT_S * 1000) return saveCard(s8, st);
     st.tool_at = now;
@@ -1948,7 +1951,7 @@ async function hookPreToolUse(input, c) {
 async function hookSessionEnd(input, c) {
   const s8 = session8(input);
   const st = readJSON(cardFile(s8));
-  if (!isObject(st) || !st.sent || st.print) return;
+  if (!isObject(st) || !st.sent || st.scripted) return;
   try {
     fs.unlinkSync(cardFile(s8));
   } catch {
