@@ -10,6 +10,8 @@
 #   MONISH_NO_MODIFY_PATH=1  leave the shell startup files alone
 set -eu
 
+# Everything runs from main, called on the last line: a download cut short by `curl | sh` runs nothing.
+main() {
 REPO="mariusapps-afk/monish"
 
 say() { printf '%s\n' "$*"; }
@@ -129,6 +131,10 @@ if [ $# -gt 0 ]; then
   fi
   say ""
   "$dir/monish" pair "$@" || exit $?
+elif [ -f "$HOME/.config/monish/computer.json" ]; then
+  # An update on a paired computer: rewrite the hooks for this version, keep the pairing and its rules.
+  say ""
+  if "$dir/monish" pair; then set -- paired; fi
 fi
 
 say ""
@@ -140,3 +146,6 @@ elif [ -n "$added" ]; then
 else
   say "Add $(tidy "$dir") to your PATH to use monish, or run $(tidy "$dir/monish")."
 fi
+}
+
+main "$@"

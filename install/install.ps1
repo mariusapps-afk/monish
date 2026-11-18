@@ -65,12 +65,21 @@ function Install-Monish {
     Write-Host "Installed monish $version in $exe"
 
     # PATH: for new terminals (user scope) and for this one, so `; monish pair <code>` works right away.
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not (($userPath -split ';') -contains $dir)) {
-      $next = if ($userPath) { "$dir;$userPath" } else { $dir }
-      [Environment]::SetEnvironmentVariable('Path', $next, 'User')
-      Write-Host "Added $dir to your PATH."
-    }
+    # Read and written raw in the registry: entries like %USERPROFILE%\... stay unexpanded (REG_EXPAND_SZ),
+    # where [Environment]::SetEnvironmentVariable would freeze them.
+    $envKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    try {
+      $userPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      $entries = @($userPath -split ';' | Where-Object { $_ } | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') })
+      if (-not ($entries -contains $dir.TrimEnd('\'))) {
+        $next = if ($userPath) { "$dir;$userPath" } else { $dir }
+        $envKey.SetValue('Path', $next, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        # Tells Explorer the environment changed (WM_SETTINGCHANGE), so new terminals get the new Path.
+        [Environment]::SetEnvironmentVariable('MONISH_INSTALL_REFRESH', '1', 'User')
+        [Environment]::SetEnvironmentVariable('MONISH_INSTALL_REFRESH', $null, 'User')
+        Write-Host "Added $dir to your PATH."
+      }
+    } finally { $envKey.Dispose() }
     if (-not (($env:Path -split ';') -contains $dir)) { $env:Path = "$dir;$env:Path" }
     Write-Host 'Next: monish pair <code>, with the code shown in the Monish app.'
   } catch {
