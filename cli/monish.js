@@ -79,9 +79,13 @@ const exists = (p) => {
   }
 };
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+// A half character (a surrogate left alone by a cut, or sent as such) makes JSON some parsers refuse whole.
+const wellFormed = (s) => s.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd');
+// At most n characters, counted and cut by code point (never half an emoji), … when cut.
 const clip = (s, n) => {
   const t = String(s ?? '');
-  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+  const points = Array.from(t.length > 2 * n ? t.slice(0, 2 * n + 1) : t);
+  return wellFormed(points.length > n ? `${points.slice(0, n - 1).join('')}…` : t);
 };
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const sleep = (ms, signal) =>
@@ -1447,26 +1451,63 @@ function alwaysOf(tool, ti, cwd) {
 }
 
 // ---- diff preview of a file edit (permission.preview): a few lines under the path on the phone.
+// These lines leave the computer: when in doubt a value is hidden, and a doubtful file sends none.
 const PREVIEW_LINES = 12;
 const PREVIEW_LINE_MAX = 120;
+const PREVIEW_MASK_WINDOW = 400; // a line is cut here before the masks run (a giant line costs nothing), then at 120
 const PREVIEW_BYTES = 2048;
 const PREVIEW_FILE_MAX = 512 * 1024; // a larger file being rewritten is sent as a path only
-// Files whose lines are secrets by nature: path only.
-const SECRET_FILE = /(^|[\\/])(\.env(\.[^\\/]*)?|\.npmrc|\.netrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519)[^\\/]*|credentials(\.[^\\/]*)?|secrets?(\.[^\\/]*)?|[^\\/]*\.(pem|key|p8|p12|pfx|keystore|jks))$/i;
+// Files whose lines are secrets by nature, by name or by folder: path only.
+const SECRET_FILE =
+  /(^|[\\/])(\.env[^\\/]*|[^\\/]*\.env|\.dev\.vars[^\\/]*|\.npmrc|\.netrc|\.pgpass|\.pypirc|\.htpasswd|\.git-credentials|auth\.json|kubeconfig[^\\/]*|wp-config[^\\/]*|id_(rsa|dsa|ecdsa|ed25519)[^\\/]*|[^\\/]*(secret|credential|adminsdk|service[-_]account)[^\\/]*|[^\\/]*\.(pem|key|p8|p12|pfx|keystore|jks|tfvars|tfstate|kdbx|ovpn|gpg|asc))$/i;
+const SECRET_DIR = /(^|[\\/])(\.ssh|\.kube|\.docker|\.aws|\.gnupg|secrets?)[\\/]/i;
+const secretFile = (p) => SECRET_FILE.test(p) || SECRET_DIR.test(p);
 
-// A line of code can carry a secret: known key shapes, credentials in a URL, a quoted value or a
-// NAME=value whose name says key, token, secret or password. The value is hidden, the name stays.
-const maskCode = (line) =>
-  line
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----.*/g, '•••')
-    .replace(
-      /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|(?:mc|mp|an)_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)/g,
-      '•••'
-    )
+// What a phone line must not carry: control characters (dropped), and the invisible characters that
+// reorder or hide text (bidi controls, zero width: shown as \ufffd, so the line reads as the code is).
+const cleanLine = (s) =>
+  wellFormed(s.replace(/\t/g, '  ').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '')).replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '\ufffd');
+
+const KNOWN_KEYS =
+  /\b(sk-[A-Za-z0-9_-]{16,}|(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{8,}|whsec_[A-Za-z0-9]{8,}|npm_[A-Za-z0-9]{16,}|glpat-[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeprs]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|A(?:KIA|SIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|(?:mc|mp|an)_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)/g;
+// A name that says key, token, secret, password…: whatever it is given is hidden, to the end of the line.
+const SENSITIVE = '[A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PWD|_PASS|AUTH|CREDENTIAL|PRIVATE|SIGNATURE)[A-Za-z0-9_.-]*';
+const NAME_VALUE = new RegExp(`(${SENSITIVE}["'\`\\])]*\\s*(?:=>|[=:]+)\\s*)\\S.*$`, 'i'); // NAME = v, "name": v, name: Type = v
+const NAME_ARG = new RegExp(`(${SENSITIVE}\\s*\\(\\s*)["'\`].*$`, 'i'); // setPassword("v")
+const NAME_PAIR = new RegExp(`(["'\`]${SENSITIVE}["'\`]\\s*,\\s*)\\S.*$`, 'i'); // define('DB_PASSWORD', 'v')
+const NAME_ALONE = new RegExp(`${SENSITIVE}["'\`\\])]*\\s*(?:=>|[=:(,]+)\\s*$`, 'i'); // the value is on the next line
+// A long run of letters and digits with no words in it (base64, hex, a key body): digits in two places
+// or more, or 32 characters mixing cases and digits, or 16 digits in a row.
+const looksRandom = (t) =>
+  (/[A-Za-z]/.test(t) && (t.match(/\d+/g) || []).length >= 2) || (t.length >= 32 && /[a-z]/.test(t) && /[A-Z]/.test(t) && /\d/.test(t)) || /\d{16,}/.test(t);
+
+// A line of code can carry a secret. `st` runs from line to line: the body of a private key is hidden
+// until its END line, and so is the line after a sensitive name left alone. The name stays, never the value.
+function maskCode(line, st = {}) {
+  if (st.key) {
+    if (/-----END [A-Z0-9 ]*-----/.test(line)) st.key = false;
+    return '•••';
+  }
+  if (st.next) {
+    st.next = false;
+    return line.trim() ? '•••' : line;
+  }
+  const begin = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----/.exec(line);
+  if (begin) {
+    st.key = !/-----END [A-Z0-9 ]*-----/.test(line.slice(begin.index + begin[0].length));
+    return `${line.slice(0, begin.index)}•••`;
+  }
+  st.next = NAME_ALONE.test(line);
+  return line
+    .replace(KNOWN_KEYS, '•••')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]{8,}/gi, '$1 •••')
-    .replace(/(\/\/[^\s:@\/]+:)[^\s@\/]+@/g, '$1•••@')
-    .replace(/([A-Za-z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)[A-Za-z0-9_.-]*["']?\s*[=:]\s*)("[^"]*"|'[^']*'|`[^`]*`)/gi, '$1•••')
-    .replace(/^(\s*(?:export\s+)?[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|AUTH|CREDENTIAL)[A-Za-z0-9_]*=)\S+/i, '$1•••');
+    .replace(/(\/\/[^\s:@\/]*:)[^\s@]+@/g, '$1•••@')
+    .replace(/(hooks\.slack\.com\/services\/)\S+/gi, '$1•••')
+    .replace(NAME_VALUE, '$1•••')
+    .replace(NAME_ARG, '$1•••')
+    .replace(NAME_PAIR, '$1•••')
+    .replace(/[A-Za-z0-9+\/=_-]{24,}/g, (t) => (looksRandom(t) ? '•••' : t));
+}
 
 const linesOf = (text) => {
   if (text === '') return [];
@@ -1505,16 +1546,19 @@ function changedLines(before, after) {
 }
 
 // What an Edit, a MultiEdit or a Write over an existing file changes: the removed and added lines
-// of each change, in order, at most 12 lines of 120 characters and 2 KB, obvious secrets hidden.
-// Null (the phone shows the path alone) for a new file, a secret file, a binary or a huge one.
+// of each change, in order, at most 12 lines of 120 characters and 2 KB, what looks like a secret hidden.
+// Null (the phone shows the path alone) for a new file, a secret file, a binary, a huge one or anything
+// that is not a regular file.
 function previewOf(tool, ti, cwd) {
   try {
     if (!['Edit', 'MultiEdit', 'Write'].includes(tool) || typeof ti.file_path !== 'string' || !ti.file_path) return null;
-    if (SECRET_FILE.test(ti.file_path)) return null;
+    if (secretFile(ti.file_path) || secretFile(path.resolve(cwd, ti.file_path))) return null;
     let hunks;
     if (tool === 'Write') {
       const file = path.resolve(cwd, ti.file_path);
-      if (typeof ti.content !== 'string' || !exists(file) || fs.statSync(file).size > PREVIEW_FILE_MAX || ti.content.length > PREVIEW_FILE_MAX) return null;
+      if (typeof ti.content !== 'string' || ti.content.length > PREVIEW_FILE_MAX || !exists(file)) return null;
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size > PREVIEW_FILE_MAX) return null; // a pipe or a device says size 0 and never ends
       const current = fs.readFileSync(file, 'utf8');
       if (current.includes('\u0000')) return null;
       hunks = [changedLines(current, ti.content)];
@@ -1529,11 +1573,14 @@ function previewOf(tool, ti, cwd) {
     // the indentation shared by every line is dropped: a phone line is about forty characters wide
     const indent = Math.min(...all.filter((l) => l.text.trim()).map((l) => l.text.replace(/\t/g, '  ').match(/^ */)[0].length), 1000);
     const lines = [];
+    const st = {};
     let bytes = 0;
     for (const l of all) {
       if (lines.length >= PREVIEW_LINES) break;
-      const raw = l.text.replace(/\t/g, '  ').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '');
-      const text = clip(maskCode(raw.trim() ? raw.slice(indent) : ''), PREVIEW_LINE_MAX);
+      // cut first (4 KB, then 400 characters), mask what is left, cut to what is shown: a secret that
+      // starts in the 120 shown characters is whole in the window the masks read
+      const raw = l.text.trim() ? cleanLine(l.text.slice(0, 4096)).slice(indent) : '';
+      const text = clip(maskCode(Array.from(raw.slice(0, 2 * PREVIEW_MASK_WINDOW)).slice(0, PREVIEW_MASK_WINDOW).join(''), st), PREVIEW_LINE_MAX);
       bytes += Buffer.byteLength(text) + 1;
       if (bytes > PREVIEW_BYTES) break;
       lines.push({ op: l.op, text });
